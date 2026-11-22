@@ -79,7 +79,6 @@ export function SettingsView({
       ...settings,
       clientId: cleanedClientId,
       rootFolderId: cleanedFolderId,
-      mode: 'drive',
     });
     await onConnectAndSync(cleanedClientId, cleanedFolderId);
   };

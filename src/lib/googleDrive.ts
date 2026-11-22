@@ -308,9 +308,9 @@ class GoogleDriveService {
       }
     }
 
-    // Remove local cached entries that were deleted on Drive
+    // Remove local cached entries that were deleted on Drive (or leftover demo entries)
     for (const existing of existingEntries) {
-      if (existing.fileId && !remoteIds.has(existing.fileId)) {
+      if (!existing.fileId || !remoteIds.has(existing.fileId)) {
         await deleteEntryFromDb(existing.uuid);
       }
     }
@@ -402,7 +402,14 @@ class GoogleDriveService {
       }
 
       for (const prev of existingPhotos) {
-        if (prev.fileId && !remotePhotoUuids.has(prev.uuid)) {
+        if (!prev.fileId || !remotePhotoUuids.has(prev.uuid)) {
+          await deletePhotoFromDb(prev.uuid);
+        }
+      }
+    } else {
+      const existingPhotos = await getAllPhotos();
+      for (const prev of existingPhotos) {
+        if (!prev.fileId) {
           await deletePhotoFromDb(prev.uuid);
         }
       }
