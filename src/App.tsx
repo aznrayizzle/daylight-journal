@@ -27,7 +27,7 @@ import {
 import { createNewEntry, parseDoentryXml, serializeDoentryXml } from './lib/doentry';
 import { driveService } from './lib/googleDrive';
 import { pickPhotoFromGooglePhotos } from './lib/googlePhotosPicker';
-import { buildDemoJournal } from './lib/demoData';
+import { buildDemoJournal, isDemoEntry } from './lib/demoData';
 import { getOnThisDayEntries } from './lib/dateUtils';
 import { Sidebar } from './components/Sidebar';
 import { TimelineList } from './components/TimelineList';
@@ -87,6 +87,24 @@ export function App() {
         await putPhotosBatch(demo.photos);
         loadedEntries = demo.entries;
         loadedPhotos = demo.photos;
+      } else if (loadedSettings.mode === 'drive') {
+        // Auto-purge any leftover demo entries/photos from an earlier sync
+        const staleDemoEntries = loadedEntries.filter(isDemoEntry);
+        if (staleDemoEntries.length > 0) {
+          const demoUuids = new Set(staleDemoEntries.map((e) => e.uuid.toUpperCase()));
+          for (const e of staleDemoEntries) {
+            await deleteEntryFromDb(e.uuid);
+          }
+          for (const p of loadedPhotos) {
+            if (!p.fileId && (demoUuids.has(p.uuid.toUpperCase()) || p.mimeType === 'image/svg+xml')) {
+              await deletePhotoFromDb(p.uuid);
+            }
+          }
+          loadedEntries = loadedEntries.filter((e) => !isDemoEntry(e));
+          loadedPhotos = loadedPhotos.filter(
+            (p) => p.fileId || (!demoUuids.has(p.uuid.toUpperCase()) && p.mimeType !== 'image/svg+xml')
+          );
+        }
       }
 
       setSettings(loadedSettings);

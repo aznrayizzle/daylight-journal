@@ -27,6 +27,22 @@ function createSamplePhotoBlob(title: string, c1: string, c2: string): Blob {
   return new Blob([svg], { type: 'image/svg+xml' });
 }
 
+const DEMO_TITLES = [
+  'Morning coffee & setting up my new journal',
+  'Crisp evening walk around the neighborhood',
+  'Road trip through the hills',
+  'Reflections on switching from Day One to Journaley',
+  'Dinner with old friends',
+  'Early 5K run before work',
+  'Finished reading "Four Thousand Weeks"',
+];
+
+export function isDemoEntry(entry: JournalEntry): boolean {
+  if (entry.fileId) return false;
+  const firstLine = entry.entryText.split('\n')[0]?.trim() ?? '';
+  return DEMO_TITLES.includes(firstLine);
+}
+
 export function buildDemoJournal(): { entries: JournalEntry[]; photos: PhotoRecord[] } {
   const photoEntry1 = createNewEntry({
     creationDate: isoOnDate(0, 0, 0, 9),
