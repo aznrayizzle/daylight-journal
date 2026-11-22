@@ -262,8 +262,9 @@ export function SettingsView({
                   (free, no billing required) and create a new project (e.g., <strong>My Journal</strong>).
                 </li>
                 <li>
-                  Go to <strong>APIs &amp; Services → Library</strong>, search for{' '}
-                  <strong>Google Drive API</strong>, and click <strong>Enable</strong>.
+                  Go to <strong>APIs &amp; Services → Library</strong>, search for and{' '}
+                  <strong>Enable</strong> both <strong>Google Drive API</strong> and{' '}
+                  <strong>Google Photos Picker API</strong>.
                 </li>
                 <li>
                   Go to <strong>Google Auth Platform → Audience</strong> (or{' '}

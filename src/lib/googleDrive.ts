@@ -13,7 +13,8 @@ import {
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
-const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
+const DRIVE_SCOPE =
+  'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/photospicker.mediaitems.readonly';
 
 interface DriveFile {
   id: string;

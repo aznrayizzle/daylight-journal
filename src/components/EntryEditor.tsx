@@ -6,6 +6,7 @@ import {
   CloudSun,
   FileCode2,
   ImagePlus,
+  Images,
   Loader2,
   MapPin,
   Save,
@@ -30,9 +31,11 @@ interface EntryEditorProps {
   mode: AppMode;
   saving: boolean;
   uploadingPhoto: boolean;
+  pickingGooglePhoto: boolean;
   onSave: (updated: JournalEntry) => Promise<void>;
   onDelete: (entry: JournalEntry) => Promise<void>;
   onUploadPhoto: (uuid: string, file: File) => Promise<void>;
+  onPickFromGooglePhotos: (uuid: string) => Promise<void>;
   onRemovePhoto: (photo: PhotoRecord) => Promise<void>;
   onBack?: () => void;
   onBlobLoaded: (uuid: string, blob: Blob) => void;
@@ -45,9 +48,11 @@ export function EntryEditor({
   mode,
   saving,
   uploadingPhoto,
+  pickingGooglePhoto,
   onSave,
   onDelete,
   onUploadPhoto,
+  onPickFromGooglePhotos,
   onRemovePhoto,
   onBack,
   onBlobLoaded,
@@ -251,8 +256,8 @@ export function EntryEditor({
           />
           <button
             onClick={() => fileInputRef.current?.click()}
-            disabled={uploadingPhoto}
-            title={photo ? 'Replace photo' : 'Attach photo'}
+            disabled={uploadingPhoto || pickingGooglePhoto}
+            title={photo ? 'Replace photo from device' : 'Attach photo from device'}
             className="p-2 rounded-lg text-slate-500 dark:text-slate-400 hover:text-sky-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-50 cursor-pointer"
           >
             {uploadingPhoto ? (
@@ -260,6 +265,22 @@ export function EntryEditor({
             ) : (
               <ImagePlus className="w-4 h-4" />
             )}
+          </button>
+
+          <button
+            onClick={() => void onPickFromGooglePhotos(entry.uuid)}
+            disabled={uploadingPhoto || pickingGooglePhoto}
+            title="Pick from Google Photos"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-sky-600 dark:hover:text-sky-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            {pickingGooglePhoto ? (
+              <Loader2 className="w-4 h-4 animate-spin text-sky-500" />
+            ) : (
+              <Images className="w-4 h-4" />
+            )}
+            <span className="hidden sm:inline">
+              {pickingGooglePhoto ? 'Picking…' : 'Google Photos'}
+            </span>
           </button>
 
           {confirmDelete ? (

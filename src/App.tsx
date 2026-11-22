@@ -26,6 +26,7 @@ import {
 } from './lib/db';
 import { createNewEntry, parseDoentryXml, serializeDoentryXml } from './lib/doentry';
 import { driveService } from './lib/googleDrive';
+import { pickPhotoFromGooglePhotos } from './lib/googlePhotosPicker';
 import { buildDemoJournal } from './lib/demoData';
 import { getOnThisDayEntries } from './lib/dateUtils';
 import { Sidebar } from './components/Sidebar';
@@ -59,6 +60,7 @@ export function App() {
   const [syncProgress, setSyncProgress] = useState<SyncProgress>(IDLE_SYNC);
   const [saving, setSaving] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [pickingGooglePhoto, setPickingGooglePhoto] = useState(false);
   const [toast, setToast] = useState<{ type: 'info' | 'error'; message: string } | null>(null);
   const [booted, setBooted] = useState(false);
 
@@ -401,6 +403,32 @@ export function App() {
     }
   };
 
+  const handlePickFromGooglePhotos = async (uuid: string) => {
+    if (!settings.clientId.trim()) {
+      setActiveView('settings');
+      showToast(
+        'Enter your Google Cloud OAuth Client ID in Settings and enable Google Photos Picker API.',
+        'error'
+      );
+      return;
+    }
+
+    setPickingGooglePhoto(true);
+    try {
+      const file = await pickPhotoFromGooglePhotos(settings.clientId);
+      setIsDriveSignedIn(driveService.isSignedIn());
+      if (file) {
+        await handleUploadPhoto(uuid, file);
+      }
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : 'Failed to pick photo from Google Photos.';
+      showToast(msg, 'error');
+    } finally {
+      setPickingGooglePhoto(false);
+    }
+  };
+
   const handleRemovePhoto = async (photo: PhotoRecord) => {
     try {
       if (settings.mode === 'drive' && photo.fileId) {
@@ -528,9 +556,11 @@ export function App() {
                   mode={settings.mode}
                   saving={saving}
                   uploadingPhoto={uploadingPhoto}
+                  pickingGooglePhoto={pickingGooglePhoto}
                   onSave={handleSaveEntry}
                   onDelete={handleDeleteEntry}
                   onUploadPhoto={handleUploadPhoto}
+                  onPickFromGooglePhotos={handlePickFromGooglePhotos}
                   onRemovePhoto={handleRemovePhoto}
                   onBack={() => setMobileShowEditor(false)}
                   onBlobLoaded={handleBlobLoaded}
