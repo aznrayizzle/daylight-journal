@@ -7,6 +7,7 @@ interface PhotoThumbnailProps {
   photo?: PhotoRecord;
   className?: string;
   alt?: string;
+  fit?: 'cover' | 'contain';
   onClick?: () => void;
   onBlobLoaded?: (uuid: string, blob: Blob) => void;
 }
@@ -15,6 +16,7 @@ export function PhotoThumbnail({
   photo,
   className = '',
   alt = 'Journal photo',
+  fit = 'cover',
   onClick,
   onBlobLoaded,
 }: PhotoThumbnailProps) {
@@ -63,10 +65,12 @@ export function PhotoThumbnail({
 
   if (!photo) return null;
 
+  const placeholderSize = fit === 'contain' ? 'min-w-64 min-h-48' : '';
+
   if (loading) {
     return (
       <div
-        className={`flex items-center justify-center bg-slate-100 dark:bg-slate-800 animate-pulse ${className}`}
+        className={`flex items-center justify-center bg-slate-100 dark:bg-slate-800 animate-pulse ${placeholderSize} ${className}`}
       >
         <ImageIcon className="w-5 h-5 text-slate-400" />
       </div>
@@ -76,7 +80,7 @@ export function PhotoThumbnail({
   if (error || !url) {
     return (
       <div
-        className={`flex items-center justify-center bg-slate-100 dark:bg-slate-800 text-slate-400 ${className}`}
+        className={`flex items-center justify-center bg-slate-100 dark:bg-slate-800 text-slate-400 ${placeholderSize} ${className}`}
         title={
           driveService.isSignedIn()
             ? 'Could not load photo'
@@ -93,7 +97,7 @@ export function PhotoThumbnail({
       src={url}
       alt={alt}
       onClick={onClick}
-      className={`object-cover ${onClick ? 'cursor-zoom-in' : ''} ${className}`}
+      className={`${fit === 'contain' ? 'object-contain' : 'object-cover'} ${onClick ? 'cursor-zoom-in' : ''} ${className}`}
     />
   );
 }

@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Star } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Plus, Star } from 'lucide-react';
 import type { JournalEntry, PhotoRecord } from '../types';
 import {
   entryToDateKey,
-  formatMonthYear,
   formatTime,
+  getEntryDateParts,
   toLocalDateKey,
 } from '../lib/dateUtils';
 import { splitEntryTitleAndPreview } from '../lib/doentry';
@@ -15,16 +15,32 @@ interface CalendarViewProps {
   photosByUuid: Map<string, PhotoRecord>;
   selectedUuid: string | null;
   onSelectEntry: (uuid: string) => void;
+  onCreateEntryForDate: (isoDate: string) => void;
   onBlobLoaded: (uuid: string, blob: Blob) => void;
 }
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTHS = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
 
 export function CalendarView({
   entries,
   photosByUuid,
   selectedUuid,
   onSelectEntry,
+  onCreateEntryForDate,
   onBlobLoaded,
 }: CalendarViewProps) {
   const now = new Date();
@@ -43,6 +59,22 @@ export function CalendarView({
       map.set(key, list);
     }
     return map;
+  }, [entries]);
+
+  const yearOptions = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    let minYear = currentYear - 5;
+    let maxYear = currentYear + 1;
+    for (const entry of entries) {
+      const { year } = getEntryDateParts(entry);
+      if (year < minYear) minYear = year;
+      if (year > maxYear) maxYear = year;
+    }
+    const list: number[] = [];
+    for (let y = maxYear; y >= minYear; y--) {
+      list.push(y);
+    }
+    return list;
   }, [entries]);
 
   const calendarCells = useMemo(() => {
@@ -79,6 +111,13 @@ export function CalendarView({
     setSelectedDateKey(toLocalDateKey(t.getFullYear(), t.getMonth(), t.getDate()));
   };
 
+  const handleCreateForSelectedDate = () => {
+    const [y, m, d] = selectedDateKey.split('-').map(Number);
+    const current = new Date();
+    const target = new Date(y, m - 1, d, current.getHours(), current.getMinutes(), 0);
+    onCreateEntryForDate(target.toISOString());
+  };
+
   const todayKey = toLocalDateKey(now.getFullYear(), now.getMonth(), now.getDate());
   const dayEntries = entriesByDate.get(selectedDateKey) ?? [];
 
@@ -86,29 +125,53 @@ export function CalendarView({
     <div className="flex flex-col h-full bg-white dark:bg-slate-950 border-r border-slate-200 dark:border-slate-800">
       {/* Month header */}
       <div className="p-4 border-b border-slate-200 dark:border-slate-800 shrink-0">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-1">
+        <div className="flex items-center justify-between gap-1 mb-3">
+          <div className="flex items-center gap-1 min-w-0">
             <button
               onClick={prevMonth}
               aria-label="Previous month"
-              className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
+              className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer shrink-0"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
-            <h2 className="text-sm font-bold text-slate-900 dark:text-white min-w-[140px] text-center">
-              {formatMonthYear(viewYear, viewMonth)}
-            </h2>
+
+            <select
+              aria-label="Month"
+              value={viewMonth}
+              onChange={(e) => setViewMonth(Number(e.target.value))}
+              className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white bg-transparent hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md px-1.5 py-1 focus:outline-none cursor-pointer"
+            >
+              {MONTHS.map((label, idx) => (
+                <option key={label} value={idx} className="bg-white dark:bg-slate-900">
+                  {label}
+                </option>
+              ))}
+            </select>
+
+            <select
+              aria-label="Year"
+              value={viewYear}
+              onChange={(e) => setViewYear(Number(e.target.value))}
+              className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white bg-transparent hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md px-1.5 py-1 focus:outline-none cursor-pointer"
+            >
+              {yearOptions.map((y) => (
+                <option key={y} value={y} className="bg-white dark:bg-slate-900">
+                  {y}
+                </option>
+              ))}
+            </select>
+
             <button
               onClick={nextMonth}
               aria-label="Next month"
-              className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
+              className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer shrink-0"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
           <button
             onClick={goToday}
-            className="text-xs font-medium px-2.5 py-1 rounded-md bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer"
+            className="text-xs font-medium px-2.5 py-1 rounded-md bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer shrink-0"
           >
             Today
           </button>
@@ -162,17 +225,35 @@ export function CalendarView({
 
       {/* Entries for selected day */}
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 px-1">
-          {selectedDateKey} · {dayEntries.length}{' '}
-          {dayEntries.length === 1 ? 'entry' : 'entries'}
-        </p>
+        <div className="flex items-center justify-between px-1">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            {selectedDateKey} · {dayEntries.length}{' '}
+            {dayEntries.length === 1 ? 'entry' : 'entries'}
+          </p>
+          <button
+            onClick={handleCreateForSelectedDate}
+            className="inline-flex items-center gap-1 text-[11px] font-semibold text-sky-600 dark:text-sky-400 hover:underline cursor-pointer"
+          >
+            <Plus className="w-3 h-3" />
+            New entry
+          </button>
+        </div>
 
         {dayEntries.length === 0 ? (
-          <p className="text-xs text-slate-400 px-1 py-4">No entries on this date.</p>
+          <div className="px-1 py-6 text-center space-y-2.5">
+            <p className="text-xs text-slate-400">No entries on this date.</p>
+            <button
+              onClick={handleCreateForSelectedDate}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400 text-xs font-semibold transition-colors cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Write entry for {selectedDateKey}
+            </button>
+          </div>
         ) : (
           dayEntries.map((entry) => {
             const { title, preview } = splitEntryTitleAndPreview(entry.entryText);
-            const photo = photosByUuid.get(entry.uuid);
+            const photo = photosByUuid.get(entry.uuid.toUpperCase());
             const isSelected = entry.uuid === selectedUuid;
 
             return (

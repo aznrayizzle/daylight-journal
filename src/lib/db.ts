@@ -52,6 +52,7 @@ export async function loadSettings(): Promise<AppSettings> {
     photosFolderId: saved?.photosFolderId,
     layoutType: saved?.layoutType,
     lastSyncAt: saved?.lastSyncAt,
+    theme: saved?.theme ?? 'system',
   };
 }
 

@@ -5,6 +5,7 @@ import {
   serializeDoentryXml,
   splitEntryTitleAndPreview,
 } from './doentry';
+import { computeWritingStreak, countWords } from './dateUtils';
 
 const SAMPLE_DOENTRY = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -134,5 +135,44 @@ describe('doentry XML parser and lossless serializer', () => {
     const res = splitEntryTitleAndPreview('# Morning Coffee\n\nWatched the sunrise from the porch.\nIt was quiet.');
     expect(res.title).toBe('Morning Coffee');
     expect(res.preview).toBe('Watched the sunrise from the porch. It was quiet.');
+  });
+
+  it('losslessly updates Location metadata while preserving coordinates', () => {
+    const entry = parseDoentryXml(SAMPLE_DOENTRY, {
+      fileName: 'A1B2C3D4E5F60718293A4B5C6D7E8F90.doentry',
+    });
+
+    const edited = {
+      ...entry,
+      location: {
+        ...entry.location,
+        placeName: 'Millennium Park',
+      },
+    };
+    const xml = serializeDoentryXml(edited);
+    const reparsed = parseDoentryXml(xml, { fileName: edited.fileName });
+    expect(reparsed.location?.placeName).toBe('Millennium Park');
+    expect(reparsed.location?.locality).toBe('Chicago');
+    expect(reparsed.location?.latitude).toBe(41.8781);
+    expect(reparsed.location?.longitude).toBe(-87.6298);
+  });
+
+  it('counts words accurately while ignoring pure markdown punctuation', () => {
+    expect(countWords('')).toBe(0);
+    expect(countWords('## Morning Walk\n\n- Saw **three** cranes\n> Nice day!')).toBe(7);
+  });
+
+  it('computes consecutive-day writing streaks', () => {
+    const ref = new Date(2026, 10, 22, 12, 0, 0); // Nov 22, 2026
+    const e1 = createNewEntry({ creationDate: new Date(2026, 10, 22, 9, 0).toISOString() });
+    const e2 = createNewEntry({ creationDate: new Date(2026, 10, 21, 9, 0).toISOString() });
+    const e3 = createNewEntry({ creationDate: new Date(2026, 10, 20, 9, 0).toISOString() });
+    const eGap = createNewEntry({ creationDate: new Date(2026, 10, 18, 9, 0).toISOString() });
+
+    expect(computeWritingStreak([e1, e2, e3, eGap], ref)).toBe(3);
+    // Yesterday still keeps streak alive if today has no entry yet
+    expect(computeWritingStreak([e2, e3, eGap], ref)).toBe(2);
+    // Gap breaks streak
+    expect(computeWritingStreak([eGap], ref)).toBe(0);
   });
 });

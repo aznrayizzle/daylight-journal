@@ -1,30 +1,47 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  Bold,
   Calendar,
   Check,
+  CloudOff,
   CloudSun,
+  Eye,
   FileCode2,
+  Heading2,
   ImagePlus,
   Images,
+  Italic,
+  List,
   Loader2,
+  LocateFixed,
   MapPin,
+  Pencil,
+  Quote,
   Save,
   Star,
   Tag,
   Trash2,
   X,
 } from 'lucide-react';
-import type { AppMode, JournalEntry, PhotoRecord } from '../types';
+import type { AppMode, EntryLocation, JournalEntry, PhotoRecord } from '../types';
 import {
+  countWords,
   datetimeLocalToIso,
   formatFullDate,
   formatTime,
   isoToDatetimeLocal,
 } from '../lib/dateUtils';
+import { MarkdownPreview } from '../lib/markdown';
 import { PhotoThumbnail } from './PhotoThumbnail';
 
+export interface EntryEditorHandle {
+  isDirty: () => boolean;
+  saveDraft: () => Promise<boolean>;
+}
+
 interface EntryEditorProps {
+  ref?: React.Ref<EntryEditorHandle>;
   entry: JournalEntry;
   photo?: PhotoRecord;
   allTags: string[];
@@ -32,16 +49,30 @@ interface EntryEditorProps {
   saving: boolean;
   uploadingPhoto: boolean;
   pickingGooglePhoto: boolean;
-  onSave: (updated: JournalEntry) => Promise<void>;
+  onSave: (updated: JournalEntry) => Promise<boolean>;
   onDelete: (entry: JournalEntry) => Promise<void>;
   onUploadPhoto: (uuid: string, file: File) => Promise<void>;
   onPickFromGooglePhotos: (uuid: string) => Promise<void>;
   onRemovePhoto: (photo: PhotoRecord) => Promise<void>;
   onBack?: () => void;
   onBlobLoaded: (uuid: string, blob: Blob) => void;
+  onDirtyChange?: (dirty: boolean) => void;
+}
+
+function serializeLocationCompare(loc?: EntryLocation): string {
+  if (!loc) return '';
+  return [
+    loc.placeName ?? '',
+    loc.locality ?? '',
+    loc.administrativeArea ?? '',
+    loc.country ?? '',
+    loc.latitude ?? '',
+    loc.longitude ?? '',
+  ].join('\0');
 }
 
 export function EntryEditor({
+  ref,
   entry,
   photo,
   allTags,
@@ -56,12 +87,19 @@ export function EntryEditor({
   onRemovePhoto,
   onBack,
   onBlobLoaded,
+  onDirtyChange,
 }: EntryEditorProps) {
   const [text, setText] = useState(entry.entryText);
   const [starred, setStarred] = useState(entry.starred);
   const [tags, setTags] = useState<string[]>(entry.tags);
   const [creationDate, setCreationDate] = useState(entry.creationDate);
+  const [location, setLocation] = useState<EntryLocation | undefined>(entry.location);
   const [editingDate, setEditingDate] = useState(false);
+  const [editingLocation, setEditingLocation] = useState(false);
+  const [locPlaceInput, setLocPlaceInput] = useState(entry.location?.placeName ?? '');
+  const [locCityInput, setLocCityInput] = useState(entry.location?.locality ?? '');
+  const [locating, setLocating] = useState(false);
+  const [previewMode, setPreviewMode] = useState(false);
   const [newTagInput, setNewTagInput] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
@@ -76,51 +114,174 @@ export function EntryEditor({
     setStarred(entry.starred);
     setTags(entry.tags);
     setCreationDate(entry.creationDate);
+    setLocation(entry.location);
+    setLocPlaceInput(entry.location?.placeName ?? '');
+    setLocCityInput(entry.location?.locality ?? '');
     setEditingDate(false);
+    setEditingLocation(false);
     setConfirmDelete(false);
     setJustSaved(false);
+    // Open empty new entries in Edit mode
+    if (!entry.entryText.trim()) {
+      setPreviewMode(false);
+    }
   }, [entry.uuid, entry.modifiedTime]);
 
   // Auto-resize textarea
   useEffect(() => {
+    if (previewMode) return;
     const ta = textareaRef.current;
     if (!ta) return;
     ta.style.height = 'auto';
-    ta.style.height = `${Math.max(320, ta.scrollHeight)}px`;
-  }, [text, entry.uuid]);
+    ta.style.height = `${Math.max(300, ta.scrollHeight)}px`;
+  }, [text, entry.uuid, previewMode]);
 
   const isDirty =
     text !== entry.entryText ||
     starred !== entry.starred ||
     creationDate !== entry.creationDate ||
-    tags.join('\0') !== entry.tags.join('\0');
+    tags.join('\0') !== entry.tags.join('\0') ||
+    serializeLocationCompare(location) !== serializeLocationCompare(entry.location);
 
-  const handleSave = async () => {
-    if (saving) return;
-    await onSave({
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
+
+  const handleSave = async (): Promise<boolean> => {
+    if (saving) return false;
+    const ok = await onSave({
       ...entry,
       entryText: text,
       starred,
       tags,
       creationDate,
+      location,
     });
-    setJustSaved(true);
-    setTimeout(() => setJustSaved(false), 2200);
+    if (ok) {
+      setJustSaved(true);
+      setTimeout(() => setJustSaved(false), 2200);
+    }
+    return ok;
   };
 
-  // Cmd+S / Ctrl+S shortcut
+  useImperativeHandle(ref, () => ({
+    isDirty: () => isDirty,
+    saveDraft: () => handleSave(),
+  }));
+
+  // Cmd+S / Ctrl+S, Cmd+E / Ctrl+E, and Escape for lightbox
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && lightboxUrl) {
+        e.preventDefault();
+        URL.revokeObjectURL(lightboxUrl);
+        setLightboxUrl(null);
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         if (isDirty) {
           void handleSave();
         }
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'e') {
+        e.preventDefault();
+        setPreviewMode((p) => !p);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   });
+
+  const applyMarkdownFormat = (prefix: string, suffix = '', placeholder = '') => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const selected = text.slice(start, end) || placeholder;
+    const next = text.slice(0, start) + prefix + selected + suffix + text.slice(end);
+    setText(next);
+    requestAnimationFrame(() => {
+      ta.focus();
+      const cursorStart = start + prefix.length;
+      const cursorEnd = cursorStart + selected.length;
+      ta.setSelectionRange(cursorStart, cursorEnd);
+    });
+  };
+
+  const applyLocationInputs = () => {
+    const place = locPlaceInput.trim();
+    const city = locCityInput.trim();
+    if (!place && !city && location?.latitude === undefined) {
+      setLocation(undefined);
+    } else {
+      setLocation({
+        ...location,
+        placeName: place || undefined,
+        locality: city || undefined,
+      });
+    }
+    setEditingLocation(false);
+  };
+
+  const handleUseCurrentLocation = () => {
+    if (!navigator.geolocation) return;
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude } = pos.coords;
+        let placeName = locPlaceInput.trim() || undefined;
+        let locality = locCityInput.trim() || undefined;
+        let administrativeArea: string | undefined;
+        let country: string | undefined;
+
+        try {
+          const res = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}`
+          );
+          if (res.ok) {
+            const data = (await res.json()) as {
+              name?: string;
+              address?: {
+                city?: string;
+                town?: string;
+                village?: string;
+                suburb?: string;
+                state?: string;
+                country?: string;
+              };
+            };
+            const addr = data.address;
+            locality = addr?.city || addr?.town || addr?.village || addr?.suburb || locality;
+            administrativeArea = addr?.state;
+            country = addr?.country;
+            placeName = data.name || locality || `${latitude.toFixed(3)}, ${longitude.toFixed(3)}`;
+          }
+        } catch {
+          if (!placeName) {
+            placeName = `${latitude.toFixed(3)}, ${longitude.toFixed(3)}`;
+          }
+        }
+
+        const nextLoc: EntryLocation = {
+          placeName,
+          locality,
+          administrativeArea,
+          country,
+          latitude,
+          longitude,
+        };
+        setLocation(nextLoc);
+        setLocPlaceInput(placeName ?? '');
+        setLocCityInput(locality ?? '');
+        setLocating(false);
+        setEditingLocation(false);
+      },
+      () => {
+        setLocating(false);
+      },
+      { enableHighAccuracy: false, timeout: 8000 }
+    );
+  };
 
   const addTag = (raw: string) => {
     const cleaned = raw.trim().replace(/^#/, '');
@@ -153,6 +314,9 @@ export function EntryEditor({
     setLightboxUrl(null);
   };
 
+  const wordCount = useMemo(() => countWords(text), [text]);
+  const readingMinutes = Math.max(1, Math.round(wordCount / 220));
+
   const suggestedTags = allTags
     .filter(
       (t) =>
@@ -162,10 +326,10 @@ export function EntryEditor({
     .slice(0, 6);
 
   const locationLabel = [
-    entry.location?.placeName,
-    entry.location?.locality,
-    entry.location?.administrativeArea,
-    entry.location?.country,
+    location?.placeName,
+    location?.locality && location.locality !== location.placeName ? location.locality : undefined,
+    location?.administrativeArea,
+    location?.country,
   ]
     .filter(Boolean)
     .slice(0, 2)
@@ -236,6 +400,19 @@ export function EntryEditor({
         {/* Actions */}
         <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
           <button
+            onClick={() => setPreviewMode((p) => !p)}
+            title={previewMode ? 'Switch to Edit mode (⌘E)' : 'Switch to Read preview (⌘E)'}
+            className={`inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+              previewMode
+                ? 'bg-sky-500/15 text-sky-700 dark:text-sky-300'
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+          >
+            {previewMode ? <Pencil className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+            <span className="hidden lg:inline">{previewMode ? 'Edit' : 'Read'}</span>
+          </button>
+
+          <button
             onClick={() => setStarred((s) => !s)}
             title={starred ? 'Remove from Favorites' : 'Add to Favorites'}
             className={`p-2 rounded-lg transition-colors cursor-pointer ${
@@ -271,14 +448,14 @@ export function EntryEditor({
             onClick={() => void onPickFromGooglePhotos(entry.uuid)}
             disabled={uploadingPhoto || pickingGooglePhoto}
             title="Pick from Google Photos"
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-sky-600 dark:hover:text-sky-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-50 cursor-pointer"
+            className="inline-flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-sky-600 dark:hover:text-sky-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-50 cursor-pointer"
           >
             {pickingGooglePhoto ? (
               <Loader2 className="w-4 h-4 animate-spin text-sky-500" />
             ) : (
               <Images className="w-4 h-4" />
             )}
-            <span className="hidden sm:inline">
+            <span className="hidden xl:inline">
               {pickingGooglePhoto ? 'Picking…' : 'Google Photos'}
             </span>
           </button>
@@ -309,7 +486,7 @@ export function EntryEditor({
           )}
 
           <button
-            onClick={handleSave}
+            onClick={() => void handleSave()}
             disabled={saving || !isDirty}
             className={`ml-1 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
               isDirty
@@ -344,60 +521,189 @@ export function EntryEditor({
         <div className="max-w-2xl mx-auto space-y-5">
           {/* Attached photo */}
           {photo && (
-            <div className="relative group rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900">
-              <PhotoThumbnail
-                photo={photo}
-                onBlobLoaded={onBlobLoaded}
-                onClick={openLightbox}
-                className="w-full max-h-[380px] object-cover"
-              />
-              <button
-                onClick={() => onRemovePhoto(photo)}
-                title="Remove photo"
-                className="absolute top-3 right-3 p-1.5 rounded-full bg-slate-900/70 text-white opacity-90 sm:opacity-0 sm:group-hover:opacity-100 hover:bg-rose-600 transition cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
+            <div className="flex justify-center">
+              <div className="relative group inline-flex items-center justify-center max-w-full rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900">
+                <PhotoThumbnail
+                  photo={photo}
+                  fit="contain"
+                  onBlobLoaded={onBlobLoaded}
+                  onClick={openLightbox}
+                  className="block max-w-full max-h-[70vh] w-auto h-auto"
+                />
+                <button
+                  onClick={() => onRemovePhoto(photo)}
+                  title="Remove photo"
+                  className="absolute top-3 right-3 p-1.5 rounded-full bg-slate-900/70 text-white opacity-90 sm:opacity-0 sm:group-hover:opacity-100 hover:bg-rose-600 transition cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           )}
 
-          {/* Metadata pills (Location, Weather, .doentry file) */}
-          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-            {locationLabel && (
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-900">
+          {/* Metadata pills (Location, Weather, Sync status, .doentry file) */}
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+              <button
+                onClick={() => setEditingLocation((v) => !v)}
+                title="Edit or set location"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-900 hover:bg-sky-50 dark:hover:bg-sky-950/50 hover:text-sky-600 dark:hover:text-sky-400 transition-colors cursor-pointer"
+              >
                 <MapPin className="w-3.5 h-3.5 text-sky-500" />
-                {locationLabel}
+                {locationLabel || 'Add location'}
+              </button>
+
+              {weatherLabel && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-900">
+                  <CloudSun className="w-3.5 h-3.5 text-amber-500" />
+                  {weatherLabel}
+                </span>
+              )}
+
+              {entry.pendingSync && mode === 'drive' && (
+                <span
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 font-medium"
+                  title="Saved locally in your browser — will upload to Google Drive on next sync"
+                >
+                  <CloudOff className="w-3 h-3" />
+                  Pending sync
+                </span>
+              )}
+
+              <span
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-900 font-mono text-[11px] opacity-80"
+                title={
+                  mode === 'drive'
+                    ? 'Edits save directly back to this .doentry file in Google Drive'
+                    : 'Demo mode — edits save locally in your browser'
+                }
+              >
+                <FileCode2 className="w-3 h-3" />
+                {entry.fileName}
               </span>
+            </div>
+
+            {editingLocation && (
+              <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/70 flex flex-wrap items-center gap-2 text-xs">
+                <input
+                  type="text"
+                  value={locPlaceInput}
+                  onChange={(e) => setLocPlaceInput(e.target.value)}
+                  placeholder="Place name (e.g. Central Park)"
+                  className="flex-1 min-w-[140px] px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 focus:border-sky-400 focus:outline-none"
+                />
+                <input
+                  type="text"
+                  value={locCityInput}
+                  onChange={(e) => setLocCityInput(e.target.value)}
+                  placeholder="City"
+                  className="w-32 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 focus:border-sky-400 focus:outline-none"
+                />
+                {typeof navigator !== 'undefined' && 'geolocation' in navigator && (
+                  <button
+                    type="button"
+                    onClick={handleUseCurrentLocation}
+                    disabled={locating}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-sky-500/15 text-sky-700 dark:text-sky-300 hover:bg-sky-500/25 font-medium cursor-pointer disabled:opacity-50"
+                  >
+                    {locating ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <LocateFixed className="w-3.5 h-3.5" />
+                    )}
+                    Use current
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={applyLocationInputs}
+                  className="px-2.5 py-1.5 rounded-lg bg-sky-500 text-white font-semibold hover:bg-sky-600 cursor-pointer"
+                >
+                  Apply
+                </button>
+                {location && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLocation(undefined);
+                      setLocPlaceInput('');
+                      setLocCityInput('');
+                      setEditingLocation(false);
+                    }}
+                    className="px-2 py-1.5 rounded-lg text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 cursor-pointer"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
             )}
-            {weatherLabel && (
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-900">
-                <CloudSun className="w-3.5 h-3.5 text-amber-500" />
-                {weatherLabel}
-              </span>
-            )}
-            <span
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-900 font-mono text-[11px] opacity-80"
-              title={
-                mode === 'drive'
-                  ? 'Edits save directly back to this .doentry file in Google Drive'
-                  : 'Demo mode — edits save locally in your browser'
-              }
-            >
-              <FileCode2 className="w-3 h-3" />
-              {entry.fileName}
-            </span>
           </div>
 
-          {/* Writing area */}
-          <textarea
-            ref={textareaRef}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="Write your journal entry…"
-            className="w-full resize-none bg-transparent text-base sm:text-[17px] leading-relaxed text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none"
-          />
+          {/* Subtle Markdown formatting bar in Edit mode */}
+          {!previewMode && (
+            <div className="flex items-center gap-1 pb-2 border-b border-slate-100 dark:border-slate-800/80 text-slate-500 dark:text-slate-400">
+              <button
+                type="button"
+                onClick={() => applyMarkdownFormat('## ', '', 'Heading')}
+                title="Heading"
+                className="p-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-800 dark:hover:text-slate-200 cursor-pointer"
+              >
+                <Heading2 className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => applyMarkdownFormat('**', '**', 'bold')}
+                title="Bold"
+                className="p-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-800 dark:hover:text-slate-200 cursor-pointer"
+              >
+                <Bold className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => applyMarkdownFormat('*', '*', 'italic')}
+                title="Italic"
+                className="p-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-800 dark:hover:text-slate-200 cursor-pointer"
+              >
+                <Italic className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => applyMarkdownFormat('- ', '', 'List item')}
+                title="Bullet list"
+                className="p-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-800 dark:hover:text-slate-200 cursor-pointer"
+              >
+                <List className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => applyMarkdownFormat('> ', '', 'Quote')}
+                title="Blockquote"
+                className="p-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-800 dark:hover:text-slate-200 cursor-pointer"
+              >
+                <Quote className="w-3.5 h-3.5" />
+              </button>
+              <span className="ml-auto text-[11px] text-slate-400">
+                Markdown supported
+              </span>
+            </div>
+          )}
 
-          {/* Tags editor */}
+          {/* Writing area or Markdown Reader */}
+          {previewMode ? (
+            <div className="min-h-[300px] py-1">
+              <MarkdownPreview content={text} />
+            </div>
+          ) : (
+            <textarea
+              ref={textareaRef}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="Write your journal entry…"
+              className="w-full resize-none bg-transparent text-base sm:text-[17px] leading-relaxed text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none"
+            />
+          )}
+
+          {/* Tags editor + Word count footer */}
           <div className="pt-4 border-t border-slate-100 dark:border-slate-800/80 space-y-2.5">
             <div className="flex flex-wrap items-center gap-1.5">
               <Tag className="w-3.5 h-3.5 text-slate-400 mr-1" />
@@ -444,6 +750,14 @@ export function EntryEditor({
                 ))}
               </div>
             )}
+
+            <div className="pt-2 flex items-center justify-between text-[11px] text-slate-400">
+              <span>
+                {wordCount} {wordCount === 1 ? 'word' : 'words'}
+                {wordCount > 0 ? ` · ${readingMinutes} min read` : ''}
+              </span>
+              <span className="hidden sm:inline">⌘S Save · ⌘E {previewMode ? 'Edit' : 'Read'}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -452,12 +766,25 @@ export function EntryEditor({
       {lightboxUrl && (
         <div
           onClick={closeLightbox}
+          role="dialog"
+          aria-modal="true"
           className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 cursor-zoom-out"
         >
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              closeLightbox();
+            }}
+            aria-label="Close photo"
+            className="absolute top-4 right-4 p-2 rounded-full bg-white/15 hover:bg-white/25 text-white transition cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
           <img
             src={lightboxUrl}
             alt="Full-size journal photo"
-            className="max-w-full max-h-full rounded-lg shadow-2xl object-contain"
+            onClick={(e) => e.stopPropagation()}
+            className="max-w-full max-h-full rounded-lg shadow-2xl object-contain cursor-default"
           />
         </div>
       )}

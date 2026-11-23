@@ -3,7 +3,9 @@ import {
   Calendar,
   Cloud,
   CloudOff,
+  Flame,
   History,
+  Images,
   Plus,
   RefreshCw,
   Settings,
@@ -19,7 +21,10 @@ interface SidebarProps {
   onSelectTag: (tag: string | null) => void;
   totalCount: number;
   favoritesCount: number;
+  photosCount: number;
   onThisDayCount: number;
+  writingStreak: number;
+  pendingSyncCount: number;
   tagCounts: [string, number][];
   settings: AppSettings;
   isDriveSignedIn: boolean;
@@ -35,7 +40,10 @@ export function Sidebar({
   onSelectTag,
   totalCount,
   favoritesCount,
+  photosCount,
   onThisDayCount,
+  writingStreak,
+  pendingSyncCount,
   tagCounts,
   settings,
   isDriveSignedIn,
@@ -72,6 +80,15 @@ export function Sidebar({
             </p>
           </div>
         </div>
+        {writingStreak > 0 && (
+          <span
+            title={`${writingStreak}-day journaling streak`}
+            className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-300"
+          >
+            <Flame className="w-3 h-3 text-amber-500" />
+            {writingStreak}d
+          </span>
+        )}
       </div>
 
       {/* Primary CTA */}
@@ -130,6 +147,20 @@ export function Sidebar({
             <Calendar className="w-4 h-4" />
             Calendar
           </span>
+        </button>
+
+        <button
+          onClick={() => {
+            onSelectTag(null);
+            onSelectView('photos');
+          }}
+          className={navItemClass(activeView === 'photos')}
+        >
+          <span className="flex items-center gap-2.5">
+            <Images className="w-4 h-4" />
+            Photos
+          </span>
+          <span className="text-xs opacity-70">{photosCount}</span>
         </button>
 
         <button
@@ -201,9 +232,11 @@ export function Sidebar({
               <span className="truncate">
                 {isSyncing
                   ? syncProgress.message
-                  : isDriveSignedIn
-                    ? 'Sync Drive'
-                    : 'Reconnect Drive'}
+                  : pendingSyncCount > 0
+                    ? `Sync (${pendingSyncCount} unsynced)`
+                    : isDriveSignedIn
+                      ? 'Sync Drive'
+                      : 'Reconnect Drive'}
               </span>
             </span>
             <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isSyncing ? 'animate-spin' : ''}`} />

@@ -2,12 +2,43 @@
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#38BDF8" />
-      <stop offset="100%" stop-color="#2563EB" />
+      <stop offset="55%" stop-color="#3B82F6" />
+      <stop offset="100%" stop-color="#1D4ED8" />
     </linearGradient>
+    <linearGradient id="sun" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDE047" />
+      <stop offset="100%" stop-color="#F59E0B" />
+    </linearGradient>
+    <clipPath id="bookClip">
+      <rect x="132" y="102" width="248" height="308" rx="28" />
+    </clipPath>
+    <filter id="bookShadow" x="-15%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="14" stdDeviation="14" flood-color="#0F172A" flood-opacity="0.22" />
+    </filter>
   </defs>
-  <rect width="512" height="512" rx="112" fill="url(#bg)" />
-  <rect x="136" y="108" width="240" height="296" rx="24" fill="#FFFFFF" fill-opacity="0.96" />
-  <rect x="136" y="108" width="38" height="296" rx="12" fill="#E0F2FE" />
-  <path d="M212 184h120M212 232h120M212 280h84" stroke="#3B82F6" stroke-width="20" stroke-linecap="round" />
-  <circle cx="316" cy="340" r="24" fill="#F59E0B" />
+
+  <!-- Rounded app icon background -->
+  <rect width="512" height="512" rx="114" fill="url(#bg)" />
+
+  <!-- Subtle top highlight -->
+  <rect x="2" y="2" width="508" height="508" rx="112" fill="none" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="4" />
+
+  <!-- Journal book with drop shadow -->
+  <g filter="url(#bookShadow)">
+    <g clip-path="url(#bookClip)">
+      <!-- Cover -->
+      <rect x="132" y="102" width="248" height="308" fill="#FFFFFF" />
+      <!-- Spine -->
+      <rect x="132" y="102" width="44" height="308" fill="#DBEAFE" />
+      <!-- Spine seam -->
+      <rect x="174" y="102" width="3" height="308" fill="#BFDBFE" />
+    </g>
+
+    <!-- Journal lines -->
+    <path d="M210 180h124M210 228h124M210 276h86" stroke="#3B82F6" stroke-width="20" stroke-linecap="round" />
+
+    <!-- Daylight sun accent -->
+    <circle cx="316" cy="342" r="28" fill="#FEF3C7" />
+    <circle cx="316" cy="342" r="21" fill="url(#sun)" />
+  </g>
 </svg>

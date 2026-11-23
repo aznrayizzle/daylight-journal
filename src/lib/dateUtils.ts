@@ -103,3 +103,44 @@ export function getOnThisDayEntries(
     }))
     .sort((a, b) => b.year - a.year);
 }
+
+/**
+ * Counts words in an entry, ignoring pure Markdown punctuation tokens.
+ */
+export function countWords(text: string): number {
+  const cleaned = text.trim();
+  if (!cleaned) return 0;
+  return cleaned
+    .split(/\s+/)
+    .filter((token) => /[a-zA-Z0-9\u00C0-\u024F\u4E00-\u9FFF]/.test(token)).length;
+}
+
+/**
+ * Computes the current consecutive-day journaling streak (counting today or yesterday as active).
+ */
+export function computeWritingStreak(entries: JournalEntry[], now: Date = new Date()): number {
+  if (entries.length === 0) return 0;
+  const dateSet = new Set<string>();
+  for (const e of entries) {
+    dateSet.add(entryToDateKey(e));
+  }
+
+  const cursor = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const todayKey = toLocalDateKey(cursor.getFullYear(), cursor.getMonth(), cursor.getDate());
+
+  // If no entry yet today, check if yesterday keeps the streak alive
+  if (!dateSet.has(todayKey)) {
+    cursor.setDate(cursor.getDate() - 1);
+    const yesterdayKey = toLocalDateKey(cursor.getFullYear(), cursor.getMonth(), cursor.getDate());
+    if (!dateSet.has(yesterdayKey)) return 0;
+  }
+
+  let streak = 0;
+  while (true) {
+    const key = toLocalDateKey(cursor.getFullYear(), cursor.getMonth(), cursor.getDate());
+    if (!dateSet.has(key)) break;
+    streak++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+}

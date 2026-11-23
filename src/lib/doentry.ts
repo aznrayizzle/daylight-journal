@@ -220,17 +220,18 @@ export function parseDoentryXml(
  */
 export function serializeDoentryXml(entry: JournalEntry): string {
   const parser = new DOMParser();
-  let doc: Document;
+  let doc: Document | null = null;
   let rootDict: Element | null = null;
 
   if (entry.rawXml && entry.rawXml.trim().length > 0) {
-    doc = parser.parseFromString(entry.rawXml, 'application/xml');
-    if (!doc.querySelector('parsererror')) {
-      rootDict = doc.querySelector('plist > dict');
+    const parsed = parser.parseFromString(entry.rawXml, 'application/xml');
+    if (!parsed.querySelector('parsererror')) {
+      doc = parsed;
+      rootDict = parsed.querySelector('plist > dict');
     }
   }
 
-  if (!rootDict) {
+  if (!doc || !rootDict) {
     doc = parser.parseFromString(`${PLIST_HEADER}\n<dict/>\n</plist>`, 'application/xml');
     rootDict = doc.querySelector('plist > dict')!;
   }
@@ -305,6 +306,80 @@ export function serializeDoentryXml(entry: JournalEntry): string {
     el.textContent = entry.uuid.toUpperCase();
     return el;
   });
+
+  // Update Location dict losslessly if location is defined (preserving any extra Day One keys)
+  if (entry.location !== undefined) {
+    const loc = entry.location;
+    const hasAnyLoc = Boolean(
+      loc.placeName?.trim() ||
+        loc.locality?.trim() ||
+        loc.administrativeArea?.trim() ||
+        loc.country?.trim() ||
+        loc.latitude !== undefined ||
+        loc.longitude !== undefined
+    );
+
+    if (!hasAnyLoc) {
+      setKey('Location', () => null);
+    } else {
+      const existingLocEl = parseDictToMap(rootDict).get('Location');
+      const locDict =
+        existingLocEl && existingLocEl.tagName === 'dict'
+          ? (existingLocEl.cloneNode(true) as Element)
+          : doc.createElement('dict');
+
+      const setSubKey = (subKey: string, valEl: Element | null) => {
+        const children = getDirectElementChildren(locDict);
+        let kEl: Element | null = null;
+        let vEl: Element | null = null;
+        for (let i = 0; i < children.length; i++) {
+          if (children[i].tagName === 'key' && (children[i].textContent ?? '').trim() === subKey) {
+            kEl = children[i];
+            vEl = children[i + 1] ?? null;
+            break;
+          }
+        }
+        if (!valEl) {
+          if (vEl) locDict.removeChild(vEl);
+          if (kEl) locDict.removeChild(kEl);
+          return;
+        }
+        if (kEl && vEl) {
+          locDict.replaceChild(valEl, vEl);
+        } else if (kEl) {
+          locDict.appendChild(valEl);
+        } else {
+          const nk = doc.createElement('key');
+          nk.textContent = subKey;
+          locDict.appendChild(nk);
+          locDict.appendChild(valEl);
+        }
+      };
+
+      const makeStr = (v?: string) => {
+        const trimmed = v?.trim();
+        if (!trimmed) return null;
+        const el = doc.createElement('string');
+        el.textContent = trimmed;
+        return el;
+      };
+      const makeReal = (v?: number) => {
+        if (v === undefined || Number.isNaN(v)) return null;
+        const el = doc.createElement('real');
+        el.textContent = String(v);
+        return el;
+      };
+
+      setSubKey('Place Name', makeStr(loc.placeName));
+      setSubKey('Locality', makeStr(loc.locality));
+      setSubKey('Administrative Area', makeStr(loc.administrativeArea));
+      setSubKey('Country', makeStr(loc.country));
+      if (loc.latitude !== undefined) setSubKey('Latitude', makeReal(loc.latitude));
+      if (loc.longitude !== undefined) setSubKey('Longitude', makeReal(loc.longitude));
+
+      setKey('Location', () => locDict);
+    }
+  }
 
   const dictXml = serializePlistElement(rootDict, '');
   return `${PLIST_HEADER}\n${dictXml}\n</plist>\n`;

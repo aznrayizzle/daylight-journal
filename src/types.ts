@@ -28,6 +28,7 @@ export interface JournalEntry {
   fileName: string;
   modifiedTime?: string;
   md5Checksum?: string;
+  pendingSync?: boolean;
 }
 
 export interface PhotoRecord {
@@ -41,6 +42,7 @@ export interface PhotoRecord {
 
 export type AppMode = 'drive' | 'demo';
 export type FolderLayout = 'standard' | 'flat';
+export type ThemePreference = 'system' | 'light' | 'dark';
 
 export interface AppSettings {
   clientId: string;
@@ -50,6 +52,7 @@ export interface AppSettings {
   photosFolderId?: string;
   layoutType?: FolderLayout;
   lastSyncAt?: string;
+  theme?: ThemePreference;
 }
 
 export interface SyncProgress {
@@ -59,4 +62,10 @@ export interface SyncProgress {
   message: string;
 }
 
-export type ActiveView = 'timeline' | 'on-this-day' | 'calendar' | 'favorites' | 'settings';
+export type ActiveView =
+  | 'timeline'
+  | 'on-this-day'
+  | 'calendar'
+  | 'photos'
+  | 'favorites'
+  | 'settings';

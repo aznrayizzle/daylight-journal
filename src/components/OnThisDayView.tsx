@@ -110,7 +110,7 @@ export function OnThisDayView({
         ) : (
           matches.map(({ entry, year, yearsAgo }) => {
             const { title, preview } = splitEntryTitleAndPreview(entry.entryText);
-            const photo = photosByUuid.get(entry.uuid);
+            const photo = photosByUuid.get(entry.uuid.toUpperCase());
             const isSelected = entry.uuid === selectedUuid;
 
             const badgeText =
@@ -153,8 +153,9 @@ export function OnThisDayView({
                 {photo && (
                   <PhotoThumbnail
                     photo={photo}
+                    fit="contain"
                     onBlobLoaded={onBlobLoaded}
-                    className="w-full h-36 rounded-lg mb-2.5 border border-slate-200 dark:border-slate-800"
+                    className="w-full max-h-48 bg-slate-50 dark:bg-slate-900/60 rounded-lg mb-2.5 border border-slate-200 dark:border-slate-800"
                   />
                 )}
 

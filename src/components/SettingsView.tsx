@@ -4,14 +4,18 @@ import {
   Cloud,
   CloudOff,
   Copy,
+  Download,
   ExternalLink,
   FolderOpen,
   HelpCircle,
   Loader2,
+  Monitor,
+  Moon,
   RefreshCw,
+  Sun,
   Upload,
 } from 'lucide-react';
-import type { AppSettings, SyncProgress } from '../types';
+import type { AppSettings, SyncProgress, ThemePreference } from '../types';
 import { DEFAULT_FOLDER_ID } from '../lib/db';
 import { extractFolderId } from '../lib/googleDrive';
 
@@ -21,11 +25,13 @@ interface SettingsViewProps {
   syncProgress: SyncProgress;
   entryCount: number;
   photoCount: number;
+  pendingSyncCount: number;
   onSaveSettings: (next: AppSettings) => Promise<void>;
   onConnectAndSync: (clientId: string, folderId: string) => Promise<void>;
   onSignOutDrive: () => void;
   onSwitchToDemo: () => Promise<void>;
   onImportLocalDoentries: (files: FileList) => Promise<void>;
+  onExportBackup: (format: 'json' | 'markdown') => void;
 }
 
 export function SettingsView({
@@ -34,11 +40,13 @@ export function SettingsView({
   syncProgress,
   entryCount,
   photoCount,
+  pendingSyncCount,
   onSaveSettings,
   onConnectAndSync,
   onSignOutDrive,
   onSwitchToDemo,
   onImportLocalDoentries,
+  onExportBackup,
 }: SettingsViewProps) {
   const [clientId, setClientId] = useState(settings.clientId);
   const [folderInput, setFolderInput] = useState(settings.rootFolderId || DEFAULT_FOLDER_ID);
@@ -122,6 +130,7 @@ export function SettingsView({
               </p>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 {entryCount} entries · {photoCount} photos cached
+                {pendingSyncCount > 0 ? ` · ${pendingSyncCount} pending sync` : ''}
                 {settings.layoutType && settings.mode === 'drive'
                   ? ` · Layout: ${settings.layoutType === 'standard' ? 'entries/ + photos/' : 'Flat folder'}`
                   : ''}
@@ -307,16 +316,51 @@ export function SettingsView({
           )}
         </div>
 
-        {/* Local .doentry tester */}
+        {/* Appearance */}
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white">Appearance</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Choose how Daylight looks on this device.
+            </p>
+          </div>
+          <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 p-0.5 bg-slate-100/70 dark:bg-slate-950">
+            {(
+              [
+                { id: 'system', label: 'System', icon: Monitor },
+                { id: 'light', label: 'Light', icon: Sun },
+                { id: 'dark', label: 'Dark', icon: Moon },
+              ] as { id: ThemePreference; label: string; icon: typeof Sun }[]
+            ).map((opt) => {
+              const Icon = opt.icon;
+              const active = (settings.theme ?? 'system') === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  onClick={() => void onSaveSettings({ ...settings, theme: opt.id })}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                    active
+                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Local .doentry tester & Backup Export */}
         <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3">
           <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
             <Upload className="w-4 h-4 text-sky-500" />
-            Test with Local .doentry Files
+            Import & Export
           </h3>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            Want to test how your real Day One / Journaley files render before setting up Google
-            Drive OAuth? Select one or more local <code>.doentry</code> files to load them into
-            your browser cache.
+            Import local Day One / Journaley <code>.doentry</code> files into your browser cache, or
+            download a backup of all cached entries.
           </p>
           <input
             ref={localImportRef}
@@ -331,13 +375,31 @@ export function SettingsView({
             }}
             className="hidden"
           />
-          <button
-            onClick={() => localImportRef.current?.click()}
-            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
-          >
-            <Upload className="w-3.5 h-3.5" />
-            Import Local .doentry Files
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => localImportRef.current?.click()}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              Import .doentry Files
+            </button>
+            <button
+              onClick={() => onExportBackup('markdown')}
+              disabled={entryCount === 0}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-200 disabled:opacity-40 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Export Markdown
+            </button>
+            <button
+              onClick={() => onExportBackup('json')}
+              disabled={entryCount === 0}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-200 disabled:opacity-40 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Export JSON
+            </button>
+          </div>
         </div>
       </div>
     </div>

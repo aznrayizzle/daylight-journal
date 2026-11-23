@@ -275,6 +275,25 @@ class GoogleDriveService {
     const { entriesFolderId, photosFolderId, layoutType } =
       await this.discoverFolders(rootFolderId);
 
+    // Push any offline-saved local changes before pulling from Drive
+    const preSyncEntries = await getAllEntries();
+    const pendingEntries = preSyncEntries.filter((e) => e.pendingSync);
+    if (pendingEntries.length > 0) {
+      for (let i = 0; i < pendingEntries.length; i++) {
+        onProgress?.({
+          phase: 'downloading',
+          completed: i,
+          total: pendingEntries.length,
+          message: `Uploading offline edits (${i + 1}/${pendingEntries.length})…`,
+        });
+        try {
+          await this.saveEntryToDrive(pendingEntries[i], entriesFolderId);
+        } catch (err) {
+          console.warn(`Could not upload pending entry ${pendingEntries[i].fileName}:`, err);
+        }
+      }
+    }
+
     onProgress?.({
       phase: 'listing',
       completed: 0,
@@ -298,6 +317,10 @@ class GoogleDriveService {
 
     for (const file of doentryFiles) {
       const cached = byFileId.get(file.id) ?? byFileName.get(file.name.toLowerCase());
+      if (cached?.pendingSync) {
+        // Keep local offline edit intact until it uploads cleanly
+        continue;
+      }
       const unchanged =
         cached &&
         cached.fileId === file.id &&
@@ -308,8 +331,9 @@ class GoogleDriveService {
       }
     }
 
-    // Remove local cached entries that were deleted on Drive (or leftover demo entries)
+    // Remove local cached entries that were deleted on Drive (never delete pendingSync entries)
     for (const existing of existingEntries) {
+      if (existing.pendingSync) continue;
       if (!existing.fileId || !remoteIds.has(existing.fileId)) {
         await deleteEntryFromDb(existing.uuid);
       }
@@ -486,6 +510,7 @@ class GoogleDriveService {
       fileName: driveMeta.name || entry.fileName,
       modifiedTime: driveMeta.modifiedTime,
       md5Checksum: driveMeta.md5Checksum,
+      pendingSync: false,
     };
     await putEntry(updated);
     return updated;

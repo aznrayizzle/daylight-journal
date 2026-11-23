@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   BookOpen,
   Calendar,
   History,
+  Images,
   Plus,
   Settings,
   Star,
@@ -28,12 +29,13 @@ import { createNewEntry, parseDoentryXml, serializeDoentryXml } from './lib/doen
 import { driveService } from './lib/googleDrive';
 import { pickPhotoFromGooglePhotos } from './lib/googlePhotosPicker';
 import { buildDemoJournal, isDemoEntry } from './lib/demoData';
-import { getOnThisDayEntries } from './lib/dateUtils';
+import { computeWritingStreak, formatFullDate, getOnThisDayEntries } from './lib/dateUtils';
 import { Sidebar } from './components/Sidebar';
 import { TimelineList } from './components/TimelineList';
 import { OnThisDayView } from './components/OnThisDayView';
 import { CalendarView } from './components/CalendarView';
-import { EntryEditor } from './components/EntryEditor';
+import { PhotosView } from './components/PhotosView';
+import { EntryEditor, type EntryEditorHandle } from './components/EntryEditor';
 import { SettingsView } from './components/SettingsView';
 
 const IDLE_SYNC: SyncProgress = {
@@ -48,6 +50,7 @@ export function App() {
     clientId: '',
     rootFolderId: DEFAULT_FOLDER_ID,
     mode: 'demo',
+    theme: 'system',
   });
   const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [photos, setPhotos] = useState<PhotoRecord[]>([]);
@@ -63,6 +66,11 @@ export function App() {
   const [pickingGooglePhoto, setPickingGooglePhoto] = useState(false);
   const [toast, setToast] = useState<{ type: 'info' | 'error'; message: string } | null>(null);
   const [booted, setBooted] = useState(false);
+  const [editorDirty, setEditorDirty] = useState(false);
+  const [pendingNavAction, setPendingNavAction] = useState<(() => void) | null>(null);
+
+  const editorRef = useRef<EntryEditorHandle>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const showToast = useCallback((message: string, type: 'info' | 'error' = 'info') => {
     setToast({ message, type });
@@ -73,6 +81,39 @@ export function App() {
     const t = setTimeout(() => setToast(null), 4500);
     return () => clearTimeout(t);
   }, [toast]);
+
+  // Apply Light / Dark / System theme class to <html>
+  useEffect(() => {
+    const theme = settings.theme ?? 'system';
+    try {
+      localStorage.setItem('daylight-theme', theme);
+    } catch {
+      // ignore storage errors
+    }
+
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const apply = () => {
+      const isDark = theme === 'dark' || (theme === 'system' && media.matches);
+      document.documentElement.classList.toggle('dark', isDark);
+    };
+    apply();
+
+    if (theme === 'system') {
+      media.addEventListener('change', apply);
+      return () => media.removeEventListener('change', apply);
+    }
+  }, [settings.theme]);
+
+  // Warn before closing tab/PWA with unsaved changes
+  useEffect(() => {
+    if (!editorDirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [editorDirty]);
 
   // Initial load from IndexedDB (and seed demo journal on first visit)
   useEffect(() => {
@@ -96,13 +137,17 @@ export function App() {
             await deleteEntryFromDb(e.uuid);
           }
           for (const p of loadedPhotos) {
-            if (!p.fileId && (demoUuids.has(p.uuid.toUpperCase()) || p.mimeType === 'image/svg+xml')) {
+            if (
+              !p.fileId &&
+              (demoUuids.has(p.uuid.toUpperCase()) || p.mimeType === 'image/svg+xml')
+            ) {
               await deletePhotoFromDb(p.uuid);
             }
           }
           loadedEntries = loadedEntries.filter((e) => !isDemoEntry(e));
           loadedPhotos = loadedPhotos.filter(
-            (p) => p.fileId || (!demoUuids.has(p.uuid.toUpperCase()) && p.mimeType !== 'image/svg+xml')
+            (p) =>
+              p.fileId || (!demoUuids.has(p.uuid.toUpperCase()) && p.mimeType !== 'image/svg+xml')
           );
         }
       }
@@ -126,6 +171,18 @@ export function App() {
     return map;
   }, [photos]);
 
+  const photosWithEntriesCount = useMemo(
+    () => entries.filter((e) => photosByUuid.has(e.uuid.toUpperCase())).length,
+    [entries, photosByUuid]
+  );
+
+  const pendingSyncCount = useMemo(
+    () => (settings.mode === 'drive' ? entries.filter((e) => e.pendingSync).length : 0),
+    [entries, settings.mode]
+  );
+
+  const writingStreak = useMemo(() => computeWritingStreak(entries), [entries]);
+
   const tagCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const e of entries) {
@@ -138,10 +195,7 @@ export function App() {
 
   const allTags = useMemo(() => tagCounts.map(([t]) => t), [tagCounts]);
 
-  const favoritesCount = useMemo(
-    () => entries.filter((e) => e.starred).length,
-    [entries]
-  );
+  const favoritesCount = useMemo(() => entries.filter((e) => e.starred).length, [entries]);
 
   const todayOnThisDay = useMemo(() => {
     const now = new Date();
@@ -187,6 +241,15 @@ export function App() {
     () => entries.find((e) => e.uuid === selectedUuid) ?? null,
     [entries, selectedUuid]
   );
+
+  // Guard navigation actions when editor has unsaved changes
+  const guardUnsaved = useCallback((action: () => void) => {
+    if (editorRef.current?.isDirty()) {
+      setPendingNavAction(() => action);
+    } else {
+      action();
+    }
+  }, []);
 
   const handleBlobLoaded = useCallback((uuid: string, blob: Blob) => {
     setPhotos((prev) =>
@@ -305,38 +368,166 @@ export function App() {
     setEntries(all);
     setSelectedUuid(imported[0].uuid);
     setActiveView('timeline');
-    showToast(`Imported ${imported.length} local .doentry ${imported.length === 1 ? 'file' : 'files'}.`);
+    showToast(
+      `Imported ${imported.length} local .doentry ${imported.length === 1 ? 'file' : 'files'}.`
+    );
   };
 
-  const handleNewEntry = async () => {
-    const fresh = createNewEntry();
-    await putEntry(fresh);
-    setEntries((prev) => [fresh, ...prev].sort((a, b) => b.creationDate.localeCompare(a.creationDate)));
-    setSelectedUuid(fresh.uuid);
-    setMobileShowEditor(true);
-    if (activeView === 'settings') {
-      setActiveView('timeline');
+  const handleExportBackup = (format: 'json' | 'markdown') => {
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    let content: string;
+    let mimeType: string;
+    let filename: string;
+
+    if (format === 'json') {
+      const payload = {
+        exportedAt: new Date().toISOString(),
+        entryCount: entries.length,
+        entries: entries.map(({ rawXml: _raw, ...rest }) => rest),
+      };
+      content = JSON.stringify(payload, null, 2);
+      mimeType = 'application/json';
+      filename = `daylight-journal-${dateStamp}.json`;
+    } else {
+      content = entries
+        .map((e) => {
+          const header = `## ${formatFullDate(e.creationDate)}`;
+          const metaParts: string[] = [];
+          if (e.starred) metaParts.push('★ Starred');
+          if (e.location?.placeName || e.location?.locality) {
+            metaParts.push(
+              [e.location.placeName, e.location.locality].filter(Boolean).join(', ')
+            );
+          }
+          if (e.tags.length > 0) metaParts.push(e.tags.map((t) => `#${t}`).join(' '));
+          const metaLine = metaParts.length > 0 ? `*${metaParts.join(' · ')}*\n\n` : '';
+          return `${header}\n${metaLine}${e.entryText.trim()}\n`;
+        })
+        .join('\n---\n\n');
+      mimeType = 'text/markdown;charset=utf-8';
+      filename = `daylight-journal-${dateStamp}.md`;
     }
+
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showToast(`Exported ${entries.length} entries as ${filename}.`);
   };
 
-  const handleSaveEntry = async (updated: JournalEntry) => {
+  const createEntryNow = useCallback(
+    async (creationDateOverride?: string) => {
+      const fresh = createNewEntry({
+        creationDate: creationDateOverride,
+        pendingSync: settings.mode === 'drive',
+      });
+      await putEntry(fresh);
+      setEntries((prev) =>
+        [fresh, ...prev].sort((a, b) => b.creationDate.localeCompare(a.creationDate))
+      );
+      setSelectedUuid(fresh.uuid);
+      setMobileShowEditor(true);
+      if (activeView === 'settings') {
+        setActiveView('timeline');
+      }
+    },
+    [settings.mode, activeView]
+  );
+
+  const handleNewEntry = useCallback(
+    (creationDateOverride?: string) => {
+      guardUnsaved(() => {
+        void createEntryNow(creationDateOverride);
+      });
+    },
+    [guardUnsaved, createEntryNow]
+  );
+
+  // Global keyboard shortcuts: Cmd/Ctrl+K or '/' for search, Alt+N for new entry
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const inInput =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable);
+
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setActiveView('timeline');
+        setMobileShowEditor(false);
+        requestAnimationFrame(() => searchInputRef.current?.focus());
+        return;
+      }
+
+      if (!inInput && e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        setActiveView('timeline');
+        setMobileShowEditor(false);
+        requestAnimationFrame(() => searchInputRef.current?.focus());
+        return;
+      }
+
+      if (e.altKey && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        handleNewEntry();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleNewEntry]);
+
+  const handleSaveEntry = async (updated: JournalEntry): Promise<boolean> => {
     setSaving(true);
     try {
       let savedEntry: JournalEntry;
       if (settings.mode === 'drive') {
-        if (!driveService.isSignedIn()) {
-          await driveService.signIn(settings.clientId);
-          setIsDriveSignedIn(true);
+        const saveLocallyPending = async (reason: string) => {
+          const xml = serializeDoentryXml(updated);
+          const localEntry: JournalEntry = {
+            ...updated,
+            rawXml: xml,
+            modifiedTime: new Date().toISOString(),
+            pendingSync: true,
+          };
+          await putEntry(localEntry);
+          showToast(reason);
+          return localEntry;
+        };
+
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+          savedEntry = await saveLocallyPending(
+            'Offline — saved locally. Will upload to Google Drive on next sync.'
+          );
+        } else {
+          try {
+            if (!driveService.isSignedIn()) {
+              await driveService.signIn(settings.clientId);
+              setIsDriveSignedIn(true);
+            }
+            const targetFolderId = settings.entriesFolderId || settings.rootFolderId;
+            savedEntry = await driveService.saveEntryToDrive(updated, targetFolderId);
+            showToast(`Saved directly to ${savedEntry.fileName} on Google Drive.`);
+          } catch {
+            savedEntry = await saveLocallyPending(
+              'Saved locally — reconnect Google Drive to upload changes.'
+            );
+          }
         }
-        const targetFolderId = settings.entriesFolderId || settings.rootFolderId;
-        savedEntry = await driveService.saveEntryToDrive(updated, targetFolderId);
-        showToast(`Saved directly to ${savedEntry.fileName} on Google Drive.`);
       } else {
         const xml = serializeDoentryXml(updated);
         savedEntry = {
           ...updated,
           rawXml: xml,
           modifiedTime: new Date().toISOString(),
+          pendingSync: false,
         };
         await putEntry(savedEntry);
       }
@@ -346,9 +537,11 @@ export function App() {
           .map((e) => (e.uuid === savedEntry.uuid ? savedEntry : e))
           .sort((a, b) => b.creationDate.localeCompare(a.creationDate))
       );
+      return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to save entry.';
       showToast(msg, 'error');
+      return false;
     } finally {
       setSaving(false);
     }
@@ -372,6 +565,7 @@ export function App() {
       setEntries(remaining);
       setSelectedUuid(remaining[0]?.uuid ?? null);
       setMobileShowEditor(false);
+      setEditorDirty(false);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to delete entry.';
       showToast(msg, 'error');
@@ -467,8 +661,22 @@ export function App() {
   };
 
   const handleSelectEntry = (uuid: string) => {
-    setSelectedUuid(uuid);
-    setMobileShowEditor(true);
+    if (uuid === selectedUuid) {
+      setMobileShowEditor(true);
+      return;
+    }
+    guardUnsaved(() => {
+      setSelectedUuid(uuid);
+      setMobileShowEditor(true);
+    });
+  };
+
+  const handleSelectView = (v: ActiveView) => {
+    if (v === activeView && !mobileShowEditor) return;
+    guardUnsaved(() => {
+      setActiveView(v);
+      setMobileShowEditor(false);
+    });
   };
 
   if (!booted) {
@@ -484,21 +692,21 @@ export function App() {
       {/* Desktop Left Sidebar */}
       <Sidebar
         activeView={activeView}
-        onSelectView={(v) => {
-          setActiveView(v);
-          setMobileShowEditor(false);
-        }}
+        onSelectView={handleSelectView}
         selectedTag={selectedTag}
         onSelectTag={setSelectedTag}
         totalCount={entries.length}
         favoritesCount={favoritesCount}
+        photosCount={photosWithEntriesCount}
         onThisDayCount={onThisDayPastCount}
+        writingStreak={writingStreak}
+        pendingSyncCount={pendingSyncCount}
         tagCounts={tagCounts}
         settings={settings}
         isDriveSignedIn={isDriveSignedIn}
         syncProgress={syncProgress}
         onSync={() => void handleConnectAndSync()}
-        onNewEntry={() => void handleNewEntry()}
+        onNewEntry={() => handleNewEntry()}
       />
 
       {/* Main Content Area */}
@@ -511,16 +719,18 @@ export function App() {
               syncProgress={syncProgress}
               entryCount={entries.length}
               photoCount={photos.length}
+              pendingSyncCount={pendingSyncCount}
               onSaveSettings={handleSaveSettings}
               onConnectAndSync={(cid, fid) => handleConnectAndSync(cid, fid)}
               onSignOutDrive={handleSignOutDrive}
               onSwitchToDemo={handleSwitchToDemo}
               onImportLocalDoentries={handleImportLocalDoentries}
+              onExportBackup={handleExportBackup}
             />
           </div>
         ) : (
           <>
-            {/* Middle Pane: Timeline / On This Day / Calendar */}
+            {/* Middle Pane: Timeline / On This Day / Calendar / Photos */}
             <section
               className={`w-full md:w-80 lg:w-96 shrink-0 h-full ${
                 mobileShowEditor ? 'hidden md:block' : 'block'
@@ -540,6 +750,15 @@ export function App() {
                   photosByUuid={photosByUuid}
                   selectedUuid={selectedUuid}
                   onSelectEntry={handleSelectEntry}
+                  onCreateEntryForDate={(iso) => handleNewEntry(iso)}
+                  onBlobLoaded={handleBlobLoaded}
+                />
+              ) : activeView === 'photos' ? (
+                <PhotosView
+                  entries={entries}
+                  photosByUuid={photosByUuid}
+                  selectedUuid={selectedUuid}
+                  onSelectEntry={handleSelectEntry}
                   onBlobLoaded={handleBlobLoaded}
                 />
               ) : (
@@ -550,11 +769,14 @@ export function App() {
                   onSelectEntry={handleSelectEntry}
                   searchQuery={searchQuery}
                   onSearchChange={setSearchQuery}
+                  searchInputRef={searchInputRef}
                   selectedTag={selectedTag}
+                  onSelectTag={setSelectedTag}
                   onClearTag={() => setSelectedTag(null)}
+                  tagCounts={tagCounts}
                   favoritesOnly={activeView === 'favorites'}
                   onThisDayPastCount={onThisDayPastCount}
-                  onOpenOnThisDay={() => setActiveView('on-this-day')}
+                  onOpenOnThisDay={() => handleSelectView('on-this-day')}
                   onBlobLoaded={handleBlobLoaded}
                 />
               )}
@@ -568,8 +790,9 @@ export function App() {
             >
               {selectedEntry ? (
                 <EntryEditor
+                  ref={editorRef}
                   entry={selectedEntry}
-                  photo={photosByUuid.get(selectedEntry.uuid)}
+                  photo={photosByUuid.get(selectedEntry.uuid.toUpperCase())}
                   allTags={allTags}
                   mode={settings.mode}
                   saving={saving}
@@ -580,8 +803,9 @@ export function App() {
                   onUploadPhoto={handleUploadPhoto}
                   onPickFromGooglePhotos={handlePickFromGooglePhotos}
                   onRemovePhoto={handleRemovePhoto}
-                  onBack={() => setMobileShowEditor(false)}
+                  onBack={() => guardUnsaved(() => setMobileShowEditor(false))}
                   onBlobLoaded={handleBlobLoaded}
+                  onDirtyChange={setEditorDirty}
                 />
               ) : (
                 <div className="h-full flex flex-col items-center justify-center p-8 text-center text-slate-400 space-y-3">
@@ -590,7 +814,7 @@ export function App() {
                     Select an entry or create a new one
                   </p>
                   <button
-                    onClick={() => void handleNewEntry()}
+                    onClick={() => handleNewEntry()}
                     className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold shadow-sm cursor-pointer"
                   >
                     <Plus className="w-4 h-4" />
@@ -605,7 +829,7 @@ export function App() {
         {/* Mobile Floating New Entry Button */}
         {!mobileShowEditor && activeView !== 'settings' && (
           <button
-            onClick={() => void handleNewEntry()}
+            onClick={() => handleNewEntry()}
             aria-label="New Entry"
             className="md:hidden fixed right-5 bottom-20 z-30 w-14 h-14 rounded-full bg-sky-500 hover:bg-sky-600 active:scale-95 text-white shadow-lg flex items-center justify-center transition cursor-pointer"
           >
@@ -614,15 +838,21 @@ export function App() {
         )}
       </main>
 
-      {/* Mobile Bottom Navigation Bar (Pixel / Android PWA) */}
+      {/* Mobile Bottom Navigation Bar */}
       {!mobileShowEditor && (
-        <nav className="md:hidden shrink-0 border-t border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-950/95 backdrop-blur safe-bottom grid grid-cols-5">
+        <nav className="md:hidden shrink-0 border-t border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-950/95 backdrop-blur safe-bottom grid grid-cols-6">
           {[
             { id: 'timeline' as const, label: 'Journal', icon: BookOpen },
             { id: 'on-this-day' as const, label: 'On Day', icon: History, badge: onThisDayPastCount },
             { id: 'calendar' as const, label: 'Calendar', icon: Calendar },
+            { id: 'photos' as const, label: 'Photos', icon: Images },
             { id: 'favorites' as const, label: 'Starred', icon: Star },
-            { id: 'settings' as const, label: 'Drive', icon: Settings },
+            {
+              id: 'settings' as const,
+              label: 'Drive',
+              icon: Settings,
+              badge: pendingSyncCount,
+            },
           ].map((item) => {
             const Icon = item.icon;
             const active = activeView === item.id;
@@ -631,7 +861,7 @@ export function App() {
                 key={item.id}
                 onClick={() => {
                   setSelectedTag(null);
-                  setActiveView(item.id);
+                  handleSelectView(item.id);
                 }}
                 className={`relative py-2.5 flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors cursor-pointer ${
                   active ? 'text-sky-600 dark:text-sky-400' : 'text-slate-500 dark:text-slate-400'
@@ -640,7 +870,7 @@ export function App() {
                 <Icon className="w-5 h-5" />
                 <span>{item.label}</span>
                 {item.badge ? (
-                  <span className="absolute top-1.5 right-3 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-white text-[9px] font-bold flex items-center justify-center">
+                  <span className="absolute top-1.5 right-2 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-white text-[9px] font-bold flex items-center justify-center">
                     {item.badge}
                   </span>
                 ) : null}
@@ -648,6 +878,59 @@ export function App() {
             );
           })}
         </nav>
+      )}
+
+      {/* Unsaved Changes Confirmation Dialog */}
+      {pendingNavAction && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-sm rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-5 space-y-4">
+            <div>
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                Unsaved changes
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                You have unsaved edits in this entry. Would you like to save them before leaving?
+              </p>
+            </div>
+            <div className="flex flex-col sm:flex-row sm:justify-end gap-2">
+              <button
+                onClick={() => setPendingNavAction(null)}
+                className="px-3 py-2 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const next = pendingNavAction;
+                  setPendingNavAction(null);
+                  setEditorDirty(false);
+                  next();
+                }}
+                className="px-3 py-2 rounded-lg text-xs font-semibold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/50 hover:bg-rose-100 dark:hover:bg-rose-950 cursor-pointer"
+              >
+                Discard
+              </button>
+              <button
+                onClick={async () => {
+                  const next = pendingNavAction;
+                  setPendingNavAction(null);
+                  const ok = await editorRef.current?.saveDraft();
+                  if (ok) {
+                    setEditorDirty(false);
+                    next();
+                  }
+                }}
+                className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-sky-500 hover:bg-sky-600 text-white shadow-xs cursor-pointer"
+              >
+                Save & Continue
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Toast Banner */}
