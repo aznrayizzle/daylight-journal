@@ -19,31 +19,50 @@ export function getEntryDateParts(entry: JournalEntry): {
   };
 }
 
+// Cached Intl.DateTimeFormat instances avoid expensive per-call formatter construction in Safari/Chrome
+const monthYearFormatter = new Intl.DateTimeFormat(undefined, {
+  month: 'long',
+  year: 'numeric',
+});
+const fullDateFormatter = new Intl.DateTimeFormat(undefined, {
+  weekday: 'long',
+  year: 'numeric',
+  month: 'long',
+  day: 'numeric',
+});
+const timeFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: 'numeric',
+  minute: '2-digit',
+});
+const weekdayShortFormatter = new Intl.DateTimeFormat(undefined, {
+  weekday: 'short',
+});
+const shortDateFormatter = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+});
+
 export function formatMonthYear(year: number, month: number): string {
-  return new Date(year, month, 1).toLocaleDateString(undefined, {
-    month: 'long',
-    year: 'numeric',
-  });
+  return monthYearFormatter.format(new Date(year, month, 1));
 }
 
 export function formatFullDate(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString(undefined, {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  });
+  return fullDateFormatter.format(d);
+}
+
+export function formatShortDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return shortDateFormatter.format(d);
 }
 
 export function formatTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleTimeString(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  return timeFormatter.format(d);
 }
 
 export function formatDayShort(iso: string): { dayNum: string; weekdayShort: string } {
@@ -51,7 +70,7 @@ export function formatDayShort(iso: string): { dayNum: string; weekdayShort: str
   if (Number.isNaN(d.getTime())) return { dayNum: '--', weekdayShort: '' };
   return {
     dayNum: String(d.getDate()),
-    weekdayShort: d.toLocaleDateString(undefined, { weekday: 'short' }).toUpperCase(),
+    weekdayShort: weekdayShortFormatter.format(d).toUpperCase(),
   };
 }
 

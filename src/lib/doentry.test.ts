@@ -6,6 +6,8 @@ import {
   splitEntryTitleAndPreview,
 } from './doentry';
 import { computeWritingStreak, countWords } from './dateUtils';
+import { buildPersonHighlightReel } from './peopleMilestones';
+import { DEFAULT_PEOPLE } from './db';
 
 const SAMPLE_DOENTRY = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -174,5 +176,41 @@ describe('doentry XML parser and lossless serializer', () => {
     expect(computeWritingStreak([e2, e3, eGap], ref)).toBe(2);
     // Gap breaks streak
     expect(computeWritingStreak([eGap], ref)).toBe(0);
+  });
+
+  it('detects partner and child milestones for Lucy and Cayden', () => {
+    const lucy = DEFAULT_PEOPLE.find((p) => p.id === 'lucy')!;
+    const cayden = DEFAULT_PEOPLE.find((p) => p.id === 'cayden')!;
+
+    const eMet = createNewEntry({
+      creationDate: '2019-04-12T18:00:00Z',
+      entryText: 'First date with Lucy at a coffee shop downtown.',
+    });
+    const eEngaged = createNewEntry({
+      creationDate: '2022-09-10T18:00:00Z',
+      entryText: 'Proposed to Lucy on the hike and she said yes! Officially engaged!',
+    });
+    const eRoutine = createNewEntry({
+      creationDate: '2023-03-01T18:00:00Z',
+      entryText: 'Picked up groceries with Lucy after work.',
+    });
+    const eCayden8m = createNewEntry({
+      creationDate: '2026-10-25T12:00:00Z',
+      entryText: "Monday: It's Cayden's 8 month milestone today and he started crawling!",
+    });
+
+    const lucyReel = buildPersonHighlightReel([eMet, eEngaged, eRoutine, eCayden8m], lucy);
+    expect(lucyReel.mentions).toHaveLength(3);
+    expect(lucyReel.milestones.map((m) => m.entry.uuid)).toContain(eMet.uuid);
+    expect(lucyReel.milestones.map((m) => m.entry.uuid)).toContain(eEngaged.uuid);
+    expect(lucyReel.milestones.map((m) => m.entry.uuid)).not.toContain(eRoutine.uuid);
+    expect(lucyReel.milestones.find((m) => m.entry.uuid === eEngaged.uuid)?.category).toBe(
+      'Engagement'
+    );
+
+    const caydenReel = buildPersonHighlightReel([eMet, eEngaged, eRoutine, eCayden8m], cayden);
+    expect(caydenReel.mentions).toHaveLength(1);
+    expect(caydenReel.milestones).toHaveLength(1);
+    expect(caydenReel.milestones[0].entry.uuid).toBe(eCayden8m.uuid);
   });
 });

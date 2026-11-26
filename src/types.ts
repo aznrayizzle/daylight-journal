@@ -38,11 +38,29 @@ export interface PhotoRecord {
   mimeType: string;
   modifiedTime?: string;
   blob?: Blob;
+  /** Raw bytes stored in IndexedDB (avoids Safari/WebKit stale IndexedDB Blob bugs). */
+  data?: ArrayBuffer;
 }
 
 export type AppMode = 'drive' | 'demo';
 export type FolderLayout = 'standard' | 'flat';
 export type ThemePreference = 'system' | 'light' | 'dark';
+
+export interface PinnedMilestone {
+  entryUuid: string;
+  label?: string;
+  category?: string;
+}
+
+export interface PersonProfile {
+  id: string;
+  name: string;
+  aliases: string[];
+  role: 'partner' | 'child' | 'family' | 'friend' | 'other';
+  accent: 'rose' | 'sky' | 'amber' | 'emerald' | 'violet';
+  pinnedMilestones: PinnedMilestone[];
+  hiddenEntryUuids: string[];
+}
 
 export interface AppSettings {
   clientId: string;
@@ -53,6 +71,7 @@ export interface AppSettings {
   layoutType?: FolderLayout;
   lastSyncAt?: string;
   theme?: ThemePreference;
+  people?: PersonProfile[];
 }
 
 export interface SyncProgress {
@@ -67,5 +86,6 @@ export type ActiveView =
   | 'on-this-day'
   | 'calendar'
   | 'photos'
+  | 'people'
   | 'favorites'
   | 'settings';

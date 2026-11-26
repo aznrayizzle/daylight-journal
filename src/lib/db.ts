@@ -1,7 +1,28 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
-import type { AppSettings, JournalEntry, PhotoRecord } from '../types';
+import type { AppSettings, JournalEntry, PersonProfile, PhotoRecord } from '../types';
 
 export const DEFAULT_FOLDER_ID = '';
+
+export const DEFAULT_PEOPLE: PersonProfile[] = [
+  {
+    id: 'lucy',
+    name: 'Lucy',
+    aliases: [],
+    role: 'partner',
+    accent: 'rose',
+    pinnedMilestones: [],
+    hiddenEntryUuids: [],
+  },
+  {
+    id: 'cayden',
+    name: 'Cayden',
+    aliases: [],
+    role: 'child',
+    accent: 'sky',
+    pinnedMilestones: [],
+    hiddenEntryUuids: [],
+  },
+];
 
 interface JournalDB extends DBSchema {
   entries: {
@@ -53,6 +74,7 @@ export async function loadSettings(): Promise<AppSettings> {
     layoutType: saved?.layoutType,
     lastSyncAt: saved?.lastSyncAt,
     theme: saved?.theme ?? 'system',
+    people: saved?.people && saved.people.length > 0 ? saved.people : DEFAULT_PEOPLE,
   };
 }
 

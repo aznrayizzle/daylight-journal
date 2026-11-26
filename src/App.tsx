@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   BookOpen,
@@ -7,13 +7,21 @@ import {
   Images,
   Plus,
   Settings,
-  Star,
+  Users,
   X,
 } from 'lucide-react';
-import type { ActiveView, AppSettings, JournalEntry, PhotoRecord, SyncProgress } from './types';
+import type {
+  ActiveView,
+  AppSettings,
+  JournalEntry,
+  PersonProfile,
+  PhotoRecord,
+  SyncProgress,
+} from './types';
 import {
   clearEntriesAndPhotos,
   DEFAULT_FOLDER_ID,
+  DEFAULT_PEOPLE,
   deleteEntryFromDb,
   deletePhotoFromDb,
   getAllEntries,
@@ -28,13 +36,20 @@ import {
 import { createNewEntry, parseDoentryXml, serializeDoentryXml } from './lib/doentry';
 import { driveService } from './lib/googleDrive';
 import { pickPhotoFromGooglePhotos } from './lib/googlePhotosPicker';
+import { photoCache } from './lib/photoCache';
 import { buildDemoJournal, isDemoEntry } from './lib/demoData';
-import { computeWritingStreak, formatFullDate, getOnThisDayEntries } from './lib/dateUtils';
+import {
+  computeWritingStreak,
+  formatFullDate,
+  formatShortDate,
+  getOnThisDayEntries,
+} from './lib/dateUtils';
 import { Sidebar } from './components/Sidebar';
 import { TimelineList } from './components/TimelineList';
 import { OnThisDayView } from './components/OnThisDayView';
 import { CalendarView } from './components/CalendarView';
 import { PhotosView } from './components/PhotosView';
+import { PeopleView } from './components/PeopleView';
 import { EntryEditor, type EntryEditorHandle } from './components/EntryEditor';
 import { SettingsView } from './components/SettingsView';
 
@@ -51,6 +66,7 @@ export function App() {
     rootFolderId: DEFAULT_FOLDER_ID,
     mode: 'demo',
     theme: 'system',
+    people: DEFAULT_PEOPLE,
   });
   const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [photos, setPhotos] = useState<PhotoRecord[]>([]);
@@ -58,8 +74,9 @@ export function App() {
   const [selectedUuid, setSelectedUuid] = useState<string | null>(null);
   const [mobileShowEditor, setMobileShowEditor] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
-  const [isDriveSignedIn, setIsDriveSignedIn] = useState(false);
+  const [isDriveSignedIn, setIsDriveSignedIn] = useState(() => driveService.isSignedIn());
   const [syncProgress, setSyncProgress] = useState<SyncProgress>(IDLE_SYNC);
   const [saving, setSaving] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -207,20 +224,13 @@ export function App() {
     [todayOnThisDay]
   );
 
-  // Instant full-text search + tag + favorites filtering
-  const filteredEntries = useMemo(() => {
-    const words = searchQuery
-      .trim()
-      .toLowerCase()
-      .split(/\s+/)
-      .filter(Boolean);
-
-    return entries.filter((entry) => {
-      if (activeView === 'favorites' && !entry.starred) return false;
-      if (selectedTag && !entry.tags.includes(selectedTag)) return false;
-
-      if (words.length > 0) {
-        const haystack = [
+  // Precomputed lowercase search index (built once when entries change, not per keystroke)
+  const searchIndex = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const entry of entries) {
+      map.set(
+        entry.uuid,
+        [
           entry.entryText,
           entry.tags.join(' '),
           entry.location?.placeName ?? '',
@@ -228,14 +238,37 @@ export function App() {
           entry.location?.country ?? '',
         ]
           .join(' ')
-          .toLowerCase();
+          .toLowerCase()
+      );
+    }
+    return map;
+  }, [entries]);
+
+  // Instant full-text search + tag + favorites filtering (deferred so typing never lags)
+  const filteredEntries = useMemo(() => {
+    const words = deferredSearchQuery
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+
+    if (activeView !== 'favorites' && !selectedTag && words.length === 0) {
+      return entries;
+    }
+
+    return entries.filter((entry) => {
+      if (activeView === 'favorites' && !entry.starred) return false;
+      if (selectedTag && !entry.tags.includes(selectedTag)) return false;
+
+      if (words.length > 0) {
+        const haystack = searchIndex.get(entry.uuid) ?? '';
         for (const w of words) {
           if (!haystack.includes(w)) return false;
         }
       }
       return true;
     });
-  }, [entries, activeView, selectedTag, searchQuery]);
+  }, [entries, searchIndex, activeView, selectedTag, deferredSearchQuery]);
 
   const selectedEntry = useMemo(
     () => entries.find((e) => e.uuid === selectedUuid) ?? null,
@@ -251,11 +284,8 @@ export function App() {
     }
   }, []);
 
-  const handleBlobLoaded = useCallback((uuid: string, blob: Blob) => {
-    setPhotos((prev) =>
-      prev.map((p) => (p.uuid === uuid.toUpperCase() ? { ...p, blob } : p))
-    );
-  }, []);
+  // No-op callback: photoCache manages decoded URLs without forcing App-wide re-renders
+  const handleBlobLoaded = useCallback((_uuid: string, _blob: Blob) => {}, []);
 
   const handleSaveSettings = async (next: AppSettings) => {
     setSettings(next);
@@ -325,6 +355,7 @@ export function App() {
 
   const handleSwitchToDemo = async () => {
     driveService.signOut();
+    photoCache.clearAll();
     setIsDriveSignedIn(false);
     await clearEntriesAndPhotos();
     const demo = buildDemoJournal();
@@ -594,16 +625,19 @@ export function App() {
           await saveSettings(nextSettings);
         }
         setPhotos((prev) => [...prev.filter((p) => p.uuid !== photo.uuid), photo]);
+        photoCache.setFromBlob(photo.uuid, file, photo.modifiedTime);
         showToast('Photo saved to Google Drive photos/ folder.');
       } else {
+        const data = await file.arrayBuffer();
         const photo: PhotoRecord = {
           uuid: uuid.toUpperCase(),
           fileName: `${uuid.toUpperCase()}.jpg`,
           mimeType: file.type || 'image/jpeg',
           modifiedTime: new Date().toISOString(),
-          blob: file,
+          data,
         };
         await putPhoto(photo);
+        photoCache.setFromBlob(photo.uuid, file, photo.modifiedTime);
         setPhotos((prev) => [...prev.filter((p) => p.uuid !== photo.uuid), photo]);
         showToast('Photo attached.');
       }
@@ -652,6 +686,7 @@ export function App() {
       } else {
         await deletePhotoFromDb(photo.uuid);
       }
+      photoCache.evict(photo.uuid);
       setPhotos((prev) => prev.filter((p) => p.uuid !== photo.uuid));
       showToast('Photo removed.');
     } catch (err) {
@@ -660,24 +695,63 @@ export function App() {
     }
   };
 
-  const handleSelectEntry = (uuid: string) => {
-    if (uuid === selectedUuid) {
-      setMobileShowEditor(true);
-      return;
-    }
-    guardUnsaved(() => {
-      setSelectedUuid(uuid);
-      setMobileShowEditor(true);
-    });
-  };
+  const handleSelectEntry = useCallback(
+    (uuid: string) => {
+      if (uuid === selectedUuid) {
+        setMobileShowEditor(true);
+        return;
+      }
+      guardUnsaved(() => {
+        setSelectedUuid(uuid);
+        setMobileShowEditor(true);
+      });
+    },
+    [selectedUuid, guardUnsaved]
+  );
 
-  const handleSelectView = (v: ActiveView) => {
-    if (v === activeView && !mobileShowEditor) return;
+  const handleSelectView = useCallback(
+    (v: ActiveView) => {
+      if (v === activeView && !mobileShowEditor) return;
+      guardUnsaved(() => {
+        setActiveView(v);
+        setMobileShowEditor(false);
+      });
+    },
+    [activeView, mobileShowEditor, guardUnsaved]
+  );
+
+  const handleClearTag = useCallback(() => setSelectedTag(null), []);
+  const handleOpenOnThisDay = useCallback(
+    () => handleSelectView('on-this-day'),
+    [handleSelectView]
+  );
+
+  const handleSurpriseMe = useCallback(() => {
+    if (entries.length === 0) return;
+    const pool =
+      entries.length > 1 ? entries.filter((e) => e.uuid !== selectedUuid) : entries;
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    if (!pick) return;
     guardUnsaved(() => {
-      setActiveView(v);
-      setMobileShowEditor(false);
+      setSelectedUuid(pick.uuid);
+      setMobileShowEditor(true);
+      if (activeView === 'settings') {
+        setActiveView('timeline');
+      }
+      showToast(`Surprise memory: ${formatShortDate(pick.creationDate)}`);
     });
-  };
+  }, [entries, selectedUuid, activeView, guardUnsaved, showToast]);
+
+  const handleUpdatePeople = useCallback(
+    async (nextPeople: PersonProfile[]) => {
+      const nextSettings: AppSettings = { ...settings, people: nextPeople };
+      setSettings(nextSettings);
+      await saveSettings(nextSettings);
+    },
+    [settings]
+  );
+
+  const people = settings.people && settings.people.length > 0 ? settings.people : DEFAULT_PEOPLE;
 
   if (!booted) {
     return (
@@ -698,6 +772,7 @@ export function App() {
         totalCount={entries.length}
         favoritesCount={favoritesCount}
         photosCount={photosWithEntriesCount}
+        peopleCount={people.length}
         onThisDayCount={onThisDayPastCount}
         writingStreak={writingStreak}
         pendingSyncCount={pendingSyncCount}
@@ -707,6 +782,7 @@ export function App() {
         syncProgress={syncProgress}
         onSync={() => void handleConnectAndSync()}
         onNewEntry={() => handleNewEntry()}
+        onSurpriseMe={handleSurpriseMe}
       />
 
       {/* Main Content Area */}
@@ -761,6 +837,15 @@ export function App() {
                   onSelectEntry={handleSelectEntry}
                   onBlobLoaded={handleBlobLoaded}
                 />
+              ) : activeView === 'people' ? (
+                <PeopleView
+                  entries={entries}
+                  photosByUuid={photosByUuid}
+                  people={people}
+                  selectedUuid={selectedUuid}
+                  onSelectEntry={handleSelectEntry}
+                  onUpdatePeople={handleUpdatePeople}
+                />
               ) : (
                 <TimelineList
                   entries={filteredEntries}
@@ -768,15 +853,18 @@ export function App() {
                   selectedUuid={selectedUuid}
                   onSelectEntry={handleSelectEntry}
                   searchQuery={searchQuery}
+                  highlightQuery={deferredSearchQuery}
                   onSearchChange={setSearchQuery}
                   searchInputRef={searchInputRef}
                   selectedTag={selectedTag}
                   onSelectTag={setSelectedTag}
-                  onClearTag={() => setSelectedTag(null)}
+                  onClearTag={handleClearTag}
                   tagCounts={tagCounts}
                   favoritesOnly={activeView === 'favorites'}
                   onThisDayPastCount={onThisDayPastCount}
-                  onOpenOnThisDay={() => handleSelectView('on-this-day')}
+                  onOpenOnThisDay={handleOpenOnThisDay}
+                  onSurpriseMe={handleSurpriseMe}
+                  totalEntriesCount={entries.length}
                   onBlobLoaded={handleBlobLoaded}
                 />
               )}
@@ -844,9 +932,9 @@ export function App() {
           {[
             { id: 'timeline' as const, label: 'Journal', icon: BookOpen },
             { id: 'on-this-day' as const, label: 'On Day', icon: History, badge: onThisDayPastCount },
+            { id: 'people' as const, label: 'People', icon: Users },
             { id: 'calendar' as const, label: 'Calendar', icon: Calendar },
             { id: 'photos' as const, label: 'Photos', icon: Images },
-            { id: 'favorites' as const, label: 'Starred', icon: Star },
             {
               id: 'settings' as const,
               label: 'Drive',

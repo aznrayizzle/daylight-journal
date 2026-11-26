@@ -15,6 +15,13 @@ const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
 const DRIVE_SCOPE =
   'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/photospicker.mediaitems.readonly';
+const AUTH_STORAGE_KEY = 'daylight-drive-auth';
+
+interface StoredAuth {
+  accessToken: string;
+  expiresAt: number;
+  userEmail?: string;
+}
 
 interface DriveFile {
   id: string;
@@ -40,10 +47,11 @@ declare global {
           initTokenClient: (config: {
             client_id: string;
             scope: string;
+            hint?: string;
             callback: (resp: TokenResponse) => void;
             error_callback?: (err: { type?: string; message?: string }) => void;
           }) => {
-            requestAccessToken: (overrideConfig?: { prompt?: string }) => void;
+            requestAccessToken: (overrideConfig?: { prompt?: string; hint?: string }) => void;
           };
           revoke: (token: string, done?: () => void) => void;
         };
@@ -67,6 +75,48 @@ export function extractFolderId(input: string): string {
 class GoogleDriveService {
   private accessToken: string | null = null;
   private expiresAt = 0;
+  private userEmail: string | undefined = undefined;
+
+  constructor() {
+    this.restoreSession();
+  }
+
+  private restoreSession(): void {
+    try {
+      const raw = localStorage.getItem(AUTH_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Partial<StoredAuth>;
+      if (parsed.userEmail) this.userEmail = parsed.userEmail;
+      if (parsed.accessToken && parsed.expiresAt && Date.now() < parsed.expiresAt - 30_000) {
+        this.accessToken = parsed.accessToken;
+        this.expiresAt = parsed.expiresAt;
+      }
+    } catch {
+      // ignore malformed storage
+    }
+  }
+
+  private persistSession(): void {
+    try {
+      if (this.accessToken && this.expiresAt > 0) {
+        const payload: StoredAuth = {
+          accessToken: this.accessToken,
+          expiresAt: this.expiresAt,
+          userEmail: this.userEmail,
+        };
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(payload));
+      } else if (this.userEmail) {
+        localStorage.setItem(
+          AUTH_STORAGE_KEY,
+          JSON.stringify({ accessToken: '', expiresAt: 0, userEmail: this.userEmail })
+        );
+      } else {
+        localStorage.removeItem(AUTH_STORAGE_KEY);
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }
 
   isSignedIn(): boolean {
     return Boolean(this.accessToken) && Date.now() < this.expiresAt - 30_000;
@@ -74,6 +124,10 @@ class GoogleDriveService {
 
   getToken(): string | null {
     return this.isSignedIn() ? this.accessToken : null;
+  }
+
+  getUserEmail(): string | undefined {
+    return this.userEmail;
   }
 
   signOut(): void {
@@ -86,11 +140,36 @@ class GoogleDriveService {
     }
     this.accessToken = null;
     this.expiresAt = 0;
+    this.userEmail = undefined;
+    this.persistSession();
+  }
+
+  private async fetchAndSaveUserEmail(): Promise<void> {
+    if (this.userEmail || !this.accessToken) return;
+    try {
+      const res = await fetch(`${DRIVE_API}/about?fields=user(emailAddress)`, {
+        headers: { Authorization: `Bearer ${this.accessToken}` },
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { user?: { emailAddress?: string } };
+        if (data.user?.emailAddress) {
+          this.userEmail = data.user.emailAddress;
+          this.persistSession();
+        }
+      }
+    } catch {
+      // non-fatal
+    }
   }
 
   async signIn(clientId: string, prompt: '' | 'consent' | 'select_account' = ''): Promise<string> {
     if (!clientId.trim()) {
       throw new Error('Please enter your Google Cloud OAuth Client ID in Settings first.');
+    }
+
+    // Reuse still-valid persisted token without opening a login popup
+    if (prompt === '' && this.isSignedIn() && this.accessToken) {
+      return this.accessToken;
     }
 
     // Wait briefly if GIS script is still loading
@@ -107,6 +186,7 @@ class GoogleDriveService {
       const client = window.google!.accounts!.oauth2!.initTokenClient({
         client_id: clientId.trim(),
         scope: DRIVE_SCOPE,
+        hint: this.userEmail,
         callback: (resp) => {
           if (resp.error) {
             reject(new Error(resp.error_description || resp.error));
@@ -114,13 +194,15 @@ class GoogleDriveService {
           }
           this.accessToken = resp.access_token;
           this.expiresAt = Date.now() + (resp.expires_in || 3600) * 1000;
+          this.persistSession();
+          void this.fetchAndSaveUserEmail();
           resolve(resp.access_token);
         },
         error_callback: (err) => {
           reject(new Error(err.message || err.type || 'Google sign-in popup was closed.'));
         },
       });
-      client.requestAccessToken({ prompt });
+      client.requestAccessToken({ prompt, hint: this.userEmail });
     });
   }
 
@@ -134,6 +216,7 @@ class GoogleDriveService {
     if (res.status === 401) {
       this.accessToken = null;
       this.expiresAt = 0;
+      this.persistSession();
       throw new Error('Google Drive session expired. Please click "Reconnect Drive" to continue.');
     }
     if (!res.ok) {
@@ -410,14 +493,15 @@ class GoogleDriveService {
         const uuid = f.name.replace(/\.[^.]+$/, '').toUpperCase();
         remotePhotoUuids.add(uuid);
         const prev = existingMap.get(uuid);
-        const keepBlob = prev && prev.modifiedTime === f.modifiedTime ? prev.blob : undefined;
+        const sameMod = Boolean(prev && prev.modifiedTime === f.modifiedTime);
         photoRecords.push({
           uuid,
           fileId: f.id,
           fileName: f.name,
           mimeType: f.mimeType || 'image/jpeg',
           modifiedTime: f.modifiedTime,
-          blob: keepBlob,
+          data: sameMod ? prev?.data : undefined,
+          blob: sameMod && !prev?.data ? prev?.blob : undefined,
         });
       }
 
@@ -531,18 +615,44 @@ class GoogleDriveService {
   }
 
   /**
-   * Downloads and caches an entry's photo blob from Google Drive.
+   * Downloads and caches an entry's photo bytes from Google Drive as an ArrayBuffer
+   * (avoiding Safari/WebKit's stale IndexedDB Blob issue).
    */
-  async downloadPhotoBlob(photo: PhotoRecord): Promise<Blob> {
-    if (photo.blob) return photo.blob;
+  async downloadPhotoBlob(photo: PhotoRecord, forceRedownload = false): Promise<Blob> {
+    const mime =
+      photo.mimeType && photo.mimeType.startsWith('image/')
+        ? photo.mimeType
+        : photo.fileName.toLowerCase().endsWith('.png')
+          ? 'image/png'
+          : photo.fileName.toLowerCase().endsWith('.webp')
+            ? 'image/webp'
+            : photo.fileName.toLowerCase().endsWith('.gif')
+              ? 'image/gif'
+              : 'image/jpeg';
+
+    if (!forceRedownload && photo.data && photo.data.byteLength > 0) {
+      return new Blob([photo.data], { type: mime });
+    }
     if (!photo.fileId) throw new Error('Photo has no Google Drive file ID.');
 
     const res = await this.authedFetch(
       `${DRIVE_API}/files/${photo.fileId}?alt=media&supportsAllDrives=true`
     );
-    const blob = await res.blob();
-    await putPhoto({ ...photo, blob });
-    return blob;
+    const buffer = await res.arrayBuffer();
+    if (buffer.byteLength === 0) {
+      throw new Error('Downloaded empty photo from Google Drive.');
+    }
+    const contentType = res.headers.get('content-type');
+    const resolvedMime =
+      contentType && contentType.startsWith('image/') ? contentType.split(';')[0].trim() : mime;
+
+    await putPhoto({
+      ...photo,
+      mimeType: resolvedMime,
+      data: buffer,
+      blob: undefined,
+    });
+    return new Blob([buffer], { type: resolvedMime });
   }
 
   /**
@@ -592,13 +702,14 @@ class GoogleDriveService {
       driveMeta = (await res.json()) as DriveFile;
     }
 
+    const data = await file.arrayBuffer();
     const photoRecord: PhotoRecord = {
       uuid: uuid.toUpperCase(),
       fileId: driveMeta.id,
       fileName: driveMeta.name || fileName,
       mimeType: driveMeta.mimeType || mimeType,
       modifiedTime: driveMeta.modifiedTime,
-      blob: file,
+      data,
     };
     await putPhoto(photoRecord);
     return { photo: photoRecord, photosFolderId: targetPhotosFolderId };

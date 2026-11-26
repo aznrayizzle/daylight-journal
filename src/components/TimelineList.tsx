@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { CloudOff, History, Search, Star, Tag, X } from 'lucide-react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { CloudOff, History, Search, Shuffle, Star, Tag, X } from 'lucide-react';
 import type { JournalEntry, PhotoRecord } from '../types';
 import { splitEntryTitleAndPreview } from '../lib/doentry';
 import {
@@ -11,7 +11,98 @@ import {
 import { HighlightText } from './HighlightText';
 import { PhotoThumbnail } from './PhotoThumbnail';
 
-const PAGE_SIZE = 80;
+const PAGE_SIZE = 60;
+
+interface TimelineRowProps {
+  entry: JournalEntry;
+  photo?: PhotoRecord;
+  isSelected: boolean;
+  searchQuery: string;
+  onSelectEntry: (uuid: string) => void;
+}
+
+const TimelineRow = memo(function TimelineRow({
+  entry,
+  photo,
+  isSelected,
+  searchQuery,
+  onSelectEntry,
+}: TimelineRowProps) {
+  const { dayNum, weekdayShort } = formatDayShort(entry.creationDate);
+  const { title, preview } = splitEntryTitleAndPreview(entry.entryText);
+
+  return (
+    <button
+      onClick={() => onSelectEntry(entry.uuid)}
+      className={`w-full text-left px-3.5 py-3 flex items-start gap-3 transition-colors cursor-pointer ${
+        isSelected
+          ? 'bg-sky-50 dark:bg-sky-950/40'
+          : 'hover:bg-slate-50 dark:hover:bg-slate-900/60'
+      }`}
+    >
+      {/* Day One date badge */}
+      <div className="w-10 shrink-0 text-center pt-0.5">
+        <div className="text-[10px] font-semibold tracking-wider text-slate-400">
+          {weekdayShort}
+        </div>
+        <div
+          className={`text-xl font-bold leading-tight ${
+            isSelected
+              ? 'text-sky-600 dark:text-sky-400'
+              : 'text-slate-800 dark:text-slate-200'
+          }`}
+        >
+          {dayNum}
+        </div>
+      </div>
+
+      {/* Text content */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
+            <HighlightText text={title} query={searchQuery} />
+          </h3>
+          {entry.starred && (
+            <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400 shrink-0" />
+          )}
+          {entry.pendingSync && (
+            <span title="Pending Drive sync">
+              <CloudOff className="w-3 h-3 text-amber-500 shrink-0" />
+            </span>
+          )}
+        </div>
+        {preview && (
+          <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mt-0.5 leading-relaxed">
+            <HighlightText text={preview} query={searchQuery} />
+          </p>
+        )}
+        <div className="flex items-center flex-wrap gap-1.5 mt-1.5 text-[11px] text-slate-400">
+          <span>{formatTime(entry.creationDate)}</span>
+          {entry.location?.locality && (
+            <span className="truncate max-w-[110px]">· {entry.location.locality}</span>
+          )}
+          {entry.tags.slice(0, 2).map((t) => (
+            <span
+              key={t}
+              className="px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
+            >
+              #{t}
+            </span>
+          ))}
+          {entry.tags.length > 2 && <span>+{entry.tags.length - 2}</span>}
+        </div>
+      </div>
+
+      {/* Optional photo thumbnail */}
+      {photo && (
+        <PhotoThumbnail
+          photo={photo}
+          className="w-14 h-14 rounded-lg shrink-0 border border-slate-200 dark:border-slate-800"
+        />
+      )}
+    </button>
+  );
+});
 
 interface TimelineListProps {
   entries: JournalEntry[];
@@ -19,6 +110,7 @@ interface TimelineListProps {
   selectedUuid: string | null;
   onSelectEntry: (uuid: string) => void;
   searchQuery: string;
+  highlightQuery?: string;
   onSearchChange: (q: string) => void;
   searchInputRef?: React.RefObject<HTMLInputElement | null>;
   selectedTag: string | null;
@@ -28,15 +120,18 @@ interface TimelineListProps {
   favoritesOnly: boolean;
   onThisDayPastCount: number;
   onOpenOnThisDay: () => void;
-  onBlobLoaded: (uuid: string, blob: Blob) => void;
+  onSurpriseMe: () => void;
+  totalEntriesCount: number;
+  onBlobLoaded?: (uuid: string, blob: Blob) => void;
 }
 
-export function TimelineList({
+export const TimelineList = memo(function TimelineList({
   entries,
   photosByUuid,
   selectedUuid,
   onSelectEntry,
   searchQuery,
+  highlightQuery,
   onSearchChange,
   searchInputRef,
   selectedTag,
@@ -46,15 +141,17 @@ export function TimelineList({
   favoritesOnly,
   onThisDayPastCount,
   onOpenOnThisDay,
-  onBlobLoaded,
+  onSurpriseMe,
+  totalEntriesCount,
 }: TimelineListProps) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const loadMoreRef = useRef<HTMLDivElement>(null);
+  const effectiveHighlight = highlightQuery ?? searchQuery;
 
   // Reset pagination when filter/search changes
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [searchQuery, selectedTag, favoritesOnly]);
+  }, [effectiveHighlight, selectedTag, favoritesOnly]);
 
   // Progressive rendering via IntersectionObserver for large journals
   useEffect(() => {
@@ -68,7 +165,7 @@ export function TimelineList({
           setVisibleCount((c) => Math.min(entries.length, c + PAGE_SIZE));
         }
       },
-      { rootMargin: '200px' }
+      { rootMargin: '240px' }
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
@@ -102,25 +199,37 @@ export function TimelineList({
     <div className="flex flex-col h-full bg-white dark:bg-slate-950 border-r border-slate-200 dark:border-slate-800">
       {/* Search header */}
       <div className="p-3 border-b border-slate-200 dark:border-slate-800 space-y-2 shrink-0">
-        <div className="relative">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-          <input
-            ref={searchInputRef}
-            type="search"
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search entries, tags, places… (⌘K)"
-            className="w-full pl-9 pr-8 py-2 text-sm rounded-lg bg-slate-100 dark:bg-slate-900 border border-transparent focus:border-sky-400 focus:bg-white dark:focus:bg-slate-900 focus:outline-none transition-colors"
-          />
-          {searchQuery && (
-            <button
-              onClick={() => onSearchChange('')}
-              aria-label="Clear search"
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          )}
+        <div className="flex items-center gap-1.5">
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              ref={searchInputRef}
+              type="search"
+              value={searchQuery}
+              onChange={(e) => onSearchChange(e.target.value)}
+              placeholder="Search entries, tags, places… (⌘K)"
+              className="w-full pl-9 pr-8 py-2 text-sm rounded-lg bg-slate-100 dark:bg-slate-900 border border-transparent focus:border-sky-400 focus:bg-white dark:focus:bg-slate-900 focus:outline-none transition-colors"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => onSearchChange('')}
+                aria-label="Clear search"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          <button
+            onClick={onSurpriseMe}
+            disabled={totalEntriesCount < 2}
+            title="Surprise Me — jump to a random memory"
+            aria-label="Surprise Me"
+            className="md:hidden shrink-0 p-2 rounded-lg bg-slate-100 dark:bg-slate-900 hover:bg-amber-100 dark:hover:bg-amber-950/60 text-slate-600 dark:text-slate-300 hover:text-amber-600 dark:hover:text-amber-400 transition-colors disabled:opacity-40 cursor-pointer"
+          >
+            <Shuffle className="w-4 h-4" />
+          </button>
         </div>
 
         {/* Mobile tag chip bar (since desktop sidebar is hidden on small screens) */}
@@ -213,88 +322,16 @@ export function TimelineList({
                 </div>
 
                 <div className="divide-y divide-slate-100 dark:divide-slate-800/70">
-                  {group.items.map((entry) => {
-                    const { dayNum, weekdayShort } = formatDayShort(entry.creationDate);
-                    const { title, preview } = splitEntryTitleAndPreview(entry.entryText);
-                    const isSelected = entry.uuid === selectedUuid;
-                    const photo = photosByUuid.get(entry.uuid.toUpperCase());
-
-                    return (
-                      <button
-                        key={entry.uuid}
-                        onClick={() => onSelectEntry(entry.uuid)}
-                        className={`w-full text-left px-3.5 py-3 flex items-start gap-3 transition-colors cursor-pointer ${
-                          isSelected
-                            ? 'bg-sky-50 dark:bg-sky-950/40'
-                            : 'hover:bg-slate-50 dark:hover:bg-slate-900/60'
-                        }`}
-                      >
-                        {/* Day One date badge */}
-                        <div className="w-10 shrink-0 text-center pt-0.5">
-                          <div className="text-[10px] font-semibold tracking-wider text-slate-400">
-                            {weekdayShort}
-                          </div>
-                          <div
-                            className={`text-xl font-bold leading-tight ${
-                              isSelected
-                                ? 'text-sky-600 dark:text-sky-400'
-                                : 'text-slate-800 dark:text-slate-200'
-                            }`}
-                          >
-                            {dayNum}
-                          </div>
-                        </div>
-
-                        {/* Text content */}
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-1.5">
-                            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
-                              <HighlightText text={title} query={searchQuery} />
-                            </h3>
-                            {entry.starred && (
-                              <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400 shrink-0" />
-                            )}
-                            {entry.pendingSync && (
-                              <span title="Pending Drive sync">
-                                <CloudOff className="w-3 h-3 text-amber-500 shrink-0" />
-                              </span>
-                            )}
-                          </div>
-                          {preview && (
-                            <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mt-0.5 leading-relaxed">
-                              <HighlightText text={preview} query={searchQuery} />
-                            </p>
-                          )}
-                          <div className="flex items-center flex-wrap gap-1.5 mt-1.5 text-[11px] text-slate-400">
-                            <span>{formatTime(entry.creationDate)}</span>
-                            {entry.location?.locality && (
-                              <span className="truncate max-w-[110px]">
-                                · {entry.location.locality}
-                              </span>
-                            )}
-                            {entry.tags.slice(0, 2).map((t) => (
-                              <span
-                                key={t}
-                                className="px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
-                              >
-                                #{t}
-                              </span>
-                            ))}
-                            {entry.tags.length > 2 && <span>+{entry.tags.length - 2}</span>}
-                          </div>
-                        </div>
-
-                        {/* Optional photo thumbnail */}
-                        {photo && (
-                          <PhotoThumbnail
-                            photo={photo}
-                            onBlobLoaded={onBlobLoaded}
-                            className="w-14 h-14 rounded-lg shrink-0 border border-slate-200 dark:border-slate-800"
-                          />
-                        )}
-                      </button>
-                    );
-                  })}
+                  {group.items.map((entry) => (
+                    <TimelineRow
+                      key={entry.uuid}
+                      entry={entry}
+                      photo={photosByUuid.get(entry.uuid.toUpperCase())}
+                      isSelected={entry.uuid === selectedUuid}
+                      searchQuery={effectiveHighlight}
+                      onSelectEntry={onSelectEntry}
+                    />
+                  ))}
                 </div>
               </div>
             ))}
@@ -314,4 +351,4 @@ export function TimelineList({
       </div>
     </div>
   );
-}
+});

@@ -1,4 +1,4 @@
-import { useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Bold,
@@ -107,10 +107,12 @@ export function EntryEditor({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const lastTextLenRef = useRef(entry.entryText.length);
 
   // Sync local draft whenever selected entry changes
   useEffect(() => {
     setText(entry.entryText);
+    lastTextLenRef.current = entry.entryText.length;
     setStarred(entry.starred);
     setTags(entry.tags);
     setCreationDate(entry.creationDate);
@@ -127,13 +129,24 @@ export function EntryEditor({
     }
   }, [entry.uuid, entry.modifiedTime]);
 
-  // Auto-resize textarea
+  // Resize textarea efficiently via rAF — avoids synchronous forced reflow on every keystroke
   useEffect(() => {
     if (previewMode) return;
     const ta = textareaRef.current;
     if (!ta) return;
-    ta.style.height = 'auto';
-    ta.style.height = `${Math.max(300, ta.scrollHeight)}px`;
+
+    const frame = requestAnimationFrame(() => {
+      const shrank = text.length < lastTextLenRef.current;
+      lastTextLenRef.current = text.length;
+      if (shrank || ta.style.height === '') {
+        ta.style.height = 'auto';
+      }
+      const nextHeight = Math.max(300, ta.scrollHeight);
+      if (ta.clientHeight < nextHeight || shrank) {
+        ta.style.height = `${nextHeight}px`;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
   }, [text, entry.uuid, previewMode]);
 
   const isDirty =
@@ -169,19 +182,22 @@ export function EntryEditor({
     saveDraft: () => handleSave(),
   }));
 
-  // Cmd+S / Ctrl+S, Cmd+E / Ctrl+E, and Escape for lightbox
+  // Stable refs so the global keydown listener only attaches once
+  const keyStateRef = useRef({ isDirty, lightboxUrl, handleSave });
+  keyStateRef.current = { isDirty, lightboxUrl, handleSave };
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && lightboxUrl) {
+      const { isDirty: dirty, lightboxUrl: lb, handleSave: save } = keyStateRef.current;
+      if (e.key === 'Escape' && lb) {
         e.preventDefault();
-        URL.revokeObjectURL(lightboxUrl);
         setLightboxUrl(null);
         return;
       }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        if (isDirty) {
-          void handleSave();
+        if (dirty) {
+          void save();
         }
       } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'e') {
         e.preventDefault();
@@ -190,7 +206,7 @@ export function EntryEditor({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  });
+  }, []);
 
   const applyMarkdownFormat = (prefix: string, suffix = '', placeholder = '') => {
     const ta = textareaRef.current;
@@ -303,18 +319,16 @@ export function EntryEditor({
     await onUploadPhoto(entry.uuid, file);
   };
 
-  const openLightbox = () => {
-    if (!photo?.blob) return;
-    const url = URL.createObjectURL(photo.blob);
-    setLightboxUrl(url);
+  const openLightbox = (resolvedUrl: string) => {
+    setLightboxUrl(resolvedUrl);
   };
 
   const closeLightbox = () => {
-    if (lightboxUrl) URL.revokeObjectURL(lightboxUrl);
     setLightboxUrl(null);
   };
 
-  const wordCount = useMemo(() => countWords(text), [text]);
+  const deferredText = useDeferredValue(text);
+  const wordCount = useMemo(() => countWords(deferredText), [deferredText]);
   const readingMinutes = Math.max(1, Math.round(wordCount / 220));
 
   const suggestedTags = allTags
@@ -526,6 +540,7 @@ export function EntryEditor({
                 <PhotoThumbnail
                   photo={photo}
                   fit="contain"
+                  eager
                   onBlobLoaded={onBlobLoaded}
                   onClick={openLightbox}
                   className="block max-w-full max-h-[70vh] w-auto h-auto"

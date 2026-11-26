@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import {
   BookOpen,
   Calendar,
@@ -9,8 +10,10 @@ import {
   Plus,
   RefreshCw,
   Settings,
+  Shuffle,
   Star,
   Tag,
+  Users,
 } from 'lucide-react';
 import type { ActiveView, AppSettings, SyncProgress } from '../types';
 
@@ -22,6 +25,7 @@ interface SidebarProps {
   totalCount: number;
   favoritesCount: number;
   photosCount: number;
+  peopleCount: number;
   onThisDayCount: number;
   writingStreak: number;
   pendingSyncCount: number;
@@ -31,9 +35,10 @@ interface SidebarProps {
   syncProgress: SyncProgress;
   onSync: () => void;
   onNewEntry: () => void;
+  onSurpriseMe: () => void;
 }
 
-export function Sidebar({
+export const Sidebar = memo(function Sidebar({
   activeView,
   onSelectView,
   selectedTag,
@@ -41,6 +46,7 @@ export function Sidebar({
   totalCount,
   favoritesCount,
   photosCount,
+  peopleCount,
   onThisDayCount,
   writingStreak,
   pendingSyncCount,
@@ -50,6 +56,7 @@ export function Sidebar({
   syncProgress,
   onSync,
   onNewEntry,
+  onSurpriseMe,
 }: SidebarProps) {
   const isSyncing =
     syncProgress.phase !== 'idle' &&
@@ -91,14 +98,23 @@ export function Sidebar({
         )}
       </div>
 
-      {/* Primary CTA */}
-      <div className="px-3 pb-3">
+      {/* Primary CTA + Surprise Me */}
+      <div className="px-3 pb-3 flex items-center gap-1.5">
         <button
           onClick={onNewEntry}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-sky-500 hover:bg-sky-600 active:bg-sky-700 text-white text-sm font-semibold shadow-sm transition-colors cursor-pointer"
+          className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-sky-500 hover:bg-sky-600 active:bg-sky-700 text-white text-sm font-semibold shadow-sm transition-colors cursor-pointer"
         >
           <Plus className="w-4 h-4" />
           New Entry
+        </button>
+        <button
+          onClick={onSurpriseMe}
+          disabled={totalCount < 2}
+          title="Surprise Me — jump to a random memory"
+          aria-label="Surprise Me"
+          className="p-2 rounded-lg bg-slate-200/80 dark:bg-slate-800 hover:bg-amber-100 dark:hover:bg-amber-950/60 text-slate-600 dark:text-slate-300 hover:text-amber-600 dark:hover:text-amber-400 transition-colors disabled:opacity-40 cursor-pointer"
+        >
+          <Shuffle className="w-4 h-4" />
         </button>
       </div>
 
@@ -161,6 +177,20 @@ export function Sidebar({
             Photos
           </span>
           <span className="text-xs opacity-70">{photosCount}</span>
+        </button>
+
+        <button
+          onClick={() => {
+            onSelectTag(null);
+            onSelectView('people');
+          }}
+          className={navItemClass(activeView === 'people')}
+        >
+          <span className="flex items-center gap-2.5">
+            <Users className="w-4 h-4" />
+            People
+          </span>
+          <span className="text-xs opacity-70">{peopleCount}</span>
         </button>
 
         <button
@@ -255,4 +285,4 @@ export function Sidebar({
       </div>
     </aside>
   );
-}
+});
