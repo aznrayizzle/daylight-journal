@@ -43,9 +43,11 @@ interface PeopleViewProps {
   isDriveSignedIn: boolean;
   isDriveMode: boolean;
   pickingGooglePhoto: boolean;
+  curatingWithAi: boolean;
   onSyncDrive: () => void;
   onOpenInEditor: (uuid: string) => void;
   onUpdatePeople: (next: PersonProfile[]) => Promise<void>;
+  onCurateWithAi: (person: PersonProfile) => Promise<void>;
   onSetMilestonePhoto: (personId: string, entryUuid: string, file: File) => Promise<void>;
   onPickMilestoneGooglePhoto: (personId: string, entryUuid: string) => Promise<void>;
   onResetMilestonePhoto: (personId: string, entryUuid: string) => Promise<void>;
@@ -74,9 +76,11 @@ export const PeopleView = memo(function PeopleView({
   isDriveSignedIn,
   isDriveMode,
   pickingGooglePhoto,
+  curatingWithAi,
   onSyncDrive,
   onOpenInEditor,
   onUpdatePeople,
+  onCurateWithAi,
   onSetMilestonePhoto,
   onPickMilestoneGooglePhoto,
   onResetMilestonePhoto,
@@ -496,7 +500,21 @@ export const PeopleView = memo(function PeopleView({
             </button>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => void onCurateWithAi(activePerson)}
+              disabled={curatingWithAi || mentions.length === 0}
+              title="Use Gemini AI to pick the biggest milestones and write crisp 1-sentence summaries"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-rose-500 hover:brightness-105 text-white text-xs font-semibold shadow-xs transition disabled:opacity-50 cursor-pointer"
+            >
+              {curatingWithAi ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="w-3.5 h-3.5" />
+              )}
+              {curatingWithAi ? 'Curating…' : 'Curate with AI'}
+            </button>
+
             <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-900 p-0.5 text-xs">
               <button
                 onClick={() => setTab('timeline')}

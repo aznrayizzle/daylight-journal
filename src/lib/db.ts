@@ -82,9 +82,11 @@ export async function loadSettings(): Promise<AppSettings> {
     mode: saved?.mode ?? 'demo',
     entriesFolderId: saved?.entriesFolderId,
     photosFolderId: saved?.photosFolderId,
+    timelineFolderId: saved?.timelineFolderId,
     layoutType: saved?.layoutType,
     lastSyncAt: saved?.lastSyncAt,
     theme: saved?.theme ?? 'system',
+    geminiApiKey: saved?.geminiApiKey ?? '',
     people,
   };
 }

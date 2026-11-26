@@ -36,6 +36,7 @@ import {
 import { createNewEntry, parseDoentryXml, serializeDoentryXml } from './lib/doentry';
 import { driveService } from './lib/googleDrive';
 import { pickPhotoFromGooglePhotos } from './lib/googlePhotosPicker';
+import { curateMilestonesWithGemini } from './lib/aiMilestones';
 import { photoCache } from './lib/photoCache';
 import { buildDemoJournal, isDemoEntry } from './lib/demoData';
 import {
@@ -81,6 +82,7 @@ export function App() {
   const [saving, setSaving] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [pickingGooglePhoto, setPickingGooglePhoto] = useState(false);
+  const [curatingWithAi, setCuratingWithAi] = useState(false);
   const [toast, setToast] = useState<{ type: 'info' | 'error'; message: string } | null>(null);
   const [booted, setBooted] = useState(false);
   const [editorDirty, setEditorDirty] = useState(false);
@@ -327,6 +329,11 @@ export function App() {
         mode: 'drive',
         entriesFolderId: result.entriesFolderId,
         photosFolderId: result.photosFolderId,
+        timelineFolderId: result.timelineFolderId ?? settings.timelineFolderId,
+        people:
+          result.remotePeople && result.remotePeople.length > 0
+            ? result.remotePeople
+            : settings.people,
         layoutType: result.layoutType,
         lastSyncAt: new Date().toISOString(),
       };
@@ -753,6 +760,24 @@ export function App() {
       const nextSettings: AppSettings = { ...settings, people: nextPeople };
       setSettings(nextSettings);
       await saveSettings(nextSettings);
+
+      // Quietly sync timeline.json to Google Drive `timeline/` folder when connected
+      if (settings.mode === 'drive' && settings.rootFolderId && driveService.isSignedIn()) {
+        try {
+          const timelineFolderId = await driveService.saveTimelineConfigToDrive(
+            nextPeople,
+            settings.rootFolderId,
+            settings.timelineFolderId
+          );
+          if (timelineFolderId !== settings.timelineFolderId) {
+            const withFolder = { ...nextSettings, timelineFolderId };
+            setSettings(withFolder);
+            await saveSettings(withFolder);
+          }
+        } catch (err) {
+          console.warn('Could not sync timeline.json to Google Drive:', err);
+        }
+      }
     },
     [settings]
   );
@@ -774,15 +799,36 @@ export function App() {
     async (personId: string, entryUuid: string, file: File) => {
       try {
         const key = `MILESTONE_${personId.toUpperCase()}_${entryUuid.toUpperCase()}`;
-        const data = await file.arrayBuffer();
-        const photo: PhotoRecord = {
-          uuid: key,
-          fileName: file.name || `${key}.jpg`,
-          mimeType: file.type || 'image/jpeg',
-          modifiedTime: new Date().toISOString(),
-          data,
-        };
-        await putPhoto(photo);
+        const existingPhoto = photosByUuid.get(key);
+        let photo: PhotoRecord;
+        let nextTimelineFolderId = settings.timelineFolderId;
+
+        if (settings.mode === 'drive' && settings.rootFolderId) {
+          if (!driveService.isSignedIn()) {
+            await driveService.signIn(settings.clientId);
+            setIsDriveSignedIn(true);
+          }
+          const uploaded = await driveService.uploadTimelinePhoto(
+            key,
+            file,
+            settings.rootFolderId,
+            settings.timelineFolderId,
+            existingPhoto
+          );
+          photo = uploaded.photo;
+          nextTimelineFolderId = uploaded.timelineFolderId;
+        } else {
+          const data = await file.arrayBuffer();
+          photo = {
+            uuid: key,
+            fileName: file.name || `${key}.jpg`,
+            mimeType: file.type || 'image/jpeg',
+            modifiedTime: new Date().toISOString(),
+            data,
+          };
+          await putPhoto(photo);
+        }
+
         photoCache.setFromBlob(key, file, photo.modifiedTime);
         setPhotos((prev) => [...prev.filter((p) => p.uuid !== key), photo]);
 
@@ -808,14 +854,31 @@ export function App() {
             hiddenEntryUuids: p.hiddenEntryUuids.filter((u) => u.toUpperCase() !== upperEntry),
           };
         });
-        await handleUpdatePeople(nextPeople);
-        showToast('Polaroid photo updated (original journal entry photo unchanged).');
+
+        const nextSettings: AppSettings = {
+          ...settings,
+          timelineFolderId: nextTimelineFolderId,
+          people: nextPeople,
+        };
+        setSettings(nextSettings);
+        await saveSettings(nextSettings);
+
+        if (settings.mode === 'drive' && settings.rootFolderId && driveService.isSignedIn()) {
+          await driveService.saveTimelineConfigToDrive(
+            nextPeople,
+            settings.rootFolderId,
+            nextTimelineFolderId
+          );
+          showToast('Saved Polaroid photo to Google Drive timeline/ folder.');
+        } else {
+          showToast('Polaroid photo updated (original journal entry photo unchanged).');
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Failed to save milestone photo.';
         showToast(msg, 'error');
       }
     },
-    [people, handleUpdatePeople, showToast]
+    [people, photosByUuid, settings, showToast]
   );
 
   const handlePickMilestoneGooglePhoto = useCallback(
@@ -850,7 +913,16 @@ export function App() {
   const handleResetMilestonePhoto = useCallback(
     async (personId: string, entryUuid: string) => {
       const key = `MILESTONE_${personId.toUpperCase()}_${entryUuid.toUpperCase()}`;
-      await deletePhotoFromDb(key);
+      const existing = photosByUuid.get(key);
+      if (settings.mode === 'drive' && existing?.fileId && driveService.isSignedIn()) {
+        try {
+          await driveService.trashPhotoInDrive(existing);
+        } catch {
+          await deletePhotoFromDb(key);
+        }
+      } else {
+        await deletePhotoFromDb(key);
+      }
       photoCache.evict(key);
       setPhotos((prev) => prev.filter((p) => p.uuid !== key));
 
@@ -867,7 +939,44 @@ export function App() {
       await handleUpdatePeople(nextPeople);
       showToast('Reverted Polaroid to original entry photo.');
     },
-    [people, handleUpdatePeople, showToast]
+    [people, photosByUuid, settings.mode, handleUpdatePeople, showToast]
+  );
+
+  const handleCuratePersonWithAi = useCallback(
+    async (person: PersonProfile) => {
+      if (!settings.geminiApiKey?.trim()) {
+        setActiveView('settings');
+        showToast('Paste your free Gemini API key in Settings to use AI curation.', 'error');
+        return;
+      }
+
+      setCuratingWithAi(true);
+      try {
+        const curated = await curateMilestonesWithGemini(
+          settings.geminiApiKey,
+          entries,
+          person
+        );
+        const nextPeople = people.map((p) =>
+          p.id === person.id
+            ? {
+                ...p,
+                aiCurated: true,
+                pinnedMilestones: curated,
+                hiddenEntryUuids: [],
+              }
+            : p
+        );
+        await handleUpdatePeople(nextPeople);
+        showToast(`Curated ${curated.length} milestones for ${person.name} with 1-sentence summaries!`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'AI curation failed.';
+        showToast(msg, 'error');
+      } finally {
+        setCuratingWithAi(false);
+      }
+    },
+    [settings.geminiApiKey, entries, people, handleUpdatePeople, showToast]
   );
 
   if (!booted) {
@@ -931,9 +1040,11 @@ export function App() {
               isDriveSignedIn={isDriveSignedIn}
               isDriveMode={settings.mode === 'drive'}
               pickingGooglePhoto={pickingGooglePhoto}
+              curatingWithAi={curatingWithAi}
               onSyncDrive={() => void handleConnectAndSync()}
               onOpenInEditor={handleOpenEntryFromPeople}
               onUpdatePeople={handleUpdatePeople}
+              onCurateWithAi={handleCuratePersonWithAi}
               onSetMilestonePhoto={handleSetMilestonePhoto}
               onPickMilestoneGooglePhoto={handlePickMilestoneGooglePhoto}
               onResetMilestonePhoto={handleResetMilestonePhoto}

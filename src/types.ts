@@ -62,6 +62,8 @@ export interface PersonProfile {
   accent: 'rose' | 'sky' | 'amber' | 'emerald' | 'violet';
   /** Optional YYYY-MM-DD cutoff — entries earlier than this are excluded from this person's timeline. */
   startDate?: string;
+  /** When true, timeline shows curated milestones only (no regex fallback clutter). */
+  aiCurated?: boolean;
   pinnedMilestones: PinnedMilestone[];
   hiddenEntryUuids: string[];
 }
@@ -72,9 +74,11 @@ export interface AppSettings {
   mode: AppMode;
   entriesFolderId?: string;
   photosFolderId?: string;
+  timelineFolderId?: string;
   layoutType?: FolderLayout;
   lastSyncAt?: string;
   theme?: ThemePreference;
+  geminiApiKey?: string;
   people?: PersonProfile[];
 }
 

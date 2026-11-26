@@ -284,6 +284,32 @@ export function getPersonMentions(
   return results;
 }
 
+function resolveCategoryStyle(category?: string): {
+  filterGroup: MilestoneFilterGroup;
+  color: string;
+} {
+  const c = (category ?? '').toLowerCase();
+  if (c.includes('trip') || c.includes('travel') || c.includes('adventure') || c.includes('outing')) {
+    return { filterGroup: 'trips', color: '#287B94' };
+  }
+  if (c.includes('wedding') || c.includes('marriage')) {
+    return { filterGroup: 'milestones', color: '#B84A62' };
+  }
+  if (c.includes('engagement')) {
+    return { filterGroup: 'milestones', color: '#C85A43' };
+  }
+  if (c.includes('home') || c.includes('moving') || c.includes('firsts')) {
+    return { filterGroup: 'milestones', color: '#2D7A5E' };
+  }
+  if (c.includes('family') || c.includes('baby') || c.includes('anniversar') || c.includes('holiday')) {
+    return { filterGroup: 'family', color: '#2563EB' };
+  }
+  if (c.includes('met') || c.includes('birth')) {
+    return { filterGroup: 'milestones', color: '#1B4965' };
+  }
+  return { filterGroup: 'milestones', color: '#C85A43' };
+}
+
 export function buildPersonHighlightReel(
   entries: JournalEntry[],
   person: PersonProfile,
@@ -327,11 +353,18 @@ export function buildPersonHighlightReel(
       splitSentences(entry.entryText).find((s) => personRegex.test(s)) || entry.entryText;
 
     if (pinned) {
+      const cat = pinned.category || proximity?.rule.category || 'Pinned Milestone';
+      const style = pinned.category
+        ? resolveCategoryStyle(pinned.category)
+        : {
+            filterGroup: proximity?.rule.filterGroup ?? ('milestones' as MilestoneFilterGroup),
+            color: proximity?.rule.color ?? '#C85A43',
+          };
       pinnedMatches.push({
         entry,
-        category: pinned.category || proximity?.rule.category || 'Pinned Milestone',
-        filterGroup: proximity?.rule.filterGroup ?? 'milestones',
-        color: proximity?.rule.color ?? '#C85A43',
+        category: cat,
+        filterGroup: style.filterGroup,
+        color: style.color,
         label: pinned.label,
         customPhotoKey: pinned.customPhotoKey,
         summary: pinned.label?.trim() || proximity?.matchedSentence || cleanSentence(fallbackSentence),
@@ -346,6 +379,9 @@ export function buildPersonHighlightReel(
     }
 
     if (isHidden) continue;
+
+    // When AI curation has been run for this person, show only the clean curated milestones
+    if (person.aiCurated && pinnedMap.size > 0) continue;
 
     if (proximity) {
       autoCandidates.push({
@@ -399,11 +435,13 @@ export function buildPersonHighlightReel(
       if (seenUuids.has(upperUuid)) continue;
       const entry = entryByUpper.get(upperUuid);
       if (!entry) continue;
+      const cat = pinned.category || 'Pinned Milestone';
+      const style = resolveCategoryStyle(cat);
       pinnedMatches.push({
         entry,
-        category: pinned.category || 'Pinned Milestone',
-        filterGroup: 'milestones',
-        color: '#C85A43',
+        category: cat,
+        filterGroup: style.filterGroup,
+        color: style.color,
         label: pinned.label,
         customPhotoKey: pinned.customPhotoKey,
         summary: pinned.label?.trim() || cleanSentence(entry.entryText),

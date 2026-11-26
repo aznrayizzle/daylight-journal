@@ -1,4 +1,10 @@
-import type { FolderLayout, JournalEntry, PhotoRecord, SyncProgress } from '../types';
+import type {
+  FolderLayout,
+  JournalEntry,
+  PersonProfile,
+  PhotoRecord,
+  SyncProgress,
+} from '../types';
 import { parseDoentryXml, serializeDoentryXml } from './doentry';
 import {
   deleteEntryFromDb,
@@ -344,6 +350,8 @@ class GoogleDriveService {
   ): Promise<{
     entriesFolderId: string;
     photosFolderId?: string;
+    timelineFolderId?: string;
+    remotePeople?: PersonProfile[];
     layoutType: FolderLayout;
     syncedCount: number;
     totalCount: number;
@@ -535,6 +543,17 @@ class GoogleDriveService {
       }
     }
 
+    // Sync optional `timeline/` folder (curated people summaries + custom Polaroid photos)
+    let timelineFolderId: string | undefined;
+    let remotePeople: PersonProfile[] | undefined;
+    try {
+      const timelineSync = await this.syncTimelineFromDrive(rootFolderId);
+      timelineFolderId = timelineSync.timelineFolderId;
+      remotePeople = timelineSync.remotePeople;
+    } catch (err) {
+      console.warn('Could not sync timeline/ folder:', err);
+    }
+
     onProgress?.({
       phase: 'done',
       completed: total,
@@ -545,6 +564,8 @@ class GoogleDriveService {
     return {
       entriesFolderId,
       photosFolderId,
+      timelineFolderId,
+      remotePeople,
       layoutType,
       syncedCount: downloadedEntries.length,
       totalCount: doentryFiles.length,
@@ -736,6 +757,207 @@ class GoogleDriveService {
       });
     }
     await deletePhotoFromDb(photo.uuid);
+  }
+
+  /**
+   * Finds or creates the `timeline/` subfolder inside the journal root for curated milestones & Polaroid photos.
+   */
+  async ensureTimelineFolder(
+    rootFolderId: string,
+    existingTimelineFolderId?: string
+  ): Promise<string> {
+    if (existingTimelineFolderId) return existingTimelineFolderId;
+
+    const folders = await this.listFilesInFolder(
+      rootFolderId,
+      "mimeType = 'application/vnd.google-apps.folder' and name = 'timeline'"
+    );
+    if (folders.length > 0) return folders[0].id;
+
+    const res = await this.authedFetch(`${DRIVE_API}/files?supportsAllDrives=true`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'timeline',
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: [rootFolderId],
+      }),
+    });
+    const created = (await res.json()) as DriveFile;
+    return created.id;
+  }
+
+  /**
+   * Reads `timeline/timeline.json` and indexes custom `MILESTONE_*` Polaroid photos from Drive.
+   */
+  async syncTimelineFromDrive(rootFolderId: string): Promise<{
+    timelineFolderId?: string;
+    remotePeople?: PersonProfile[];
+  }> {
+    const folders = await this.listFilesInFolder(
+      rootFolderId,
+      "mimeType = 'application/vnd.google-apps.folder' and name = 'timeline'"
+    );
+    if (folders.length === 0) return {};
+
+    const timelineFolderId = folders[0].id;
+    const files = await this.listFilesInFolder(timelineFolderId);
+
+    // 1. Read timeline.json if present
+    let remotePeople: PersonProfile[] | undefined;
+    const configFile = files.find((f) => f.name.toLowerCase() === 'timeline.json');
+    if (configFile) {
+      const res = await this.authedFetch(
+        `${DRIVE_API}/files/${configFile.id}?alt=media&supportsAllDrives=true`
+      );
+      const parsed = (await res.json()) as { people?: PersonProfile[] } | PersonProfile[];
+      const list = Array.isArray(parsed) ? parsed : parsed?.people;
+      if (Array.isArray(list) && list.length > 0) {
+        remotePeople = list;
+      }
+    }
+
+    // 2. Index custom MILESTONE_* Polaroid photos in `timeline/`
+    const existingPhotos = await getAllPhotos();
+    const existingMap = new Map(existingPhotos.map((p) => [p.uuid.toUpperCase(), p]));
+    const timelinePhotos: PhotoRecord[] = [];
+
+    for (const f of files) {
+      if (!f.mimeType.startsWith('image/') && !/\.(jpe?g|png|webp|gif|heic)$/i.test(f.name)) {
+        continue;
+      }
+      const key = f.name.replace(/\.[^.]+$/, '').toUpperCase();
+      if (!key.startsWith('MILESTONE_')) continue;
+      const prev = existingMap.get(key);
+      const sameMod = Boolean(prev && prev.modifiedTime === f.modifiedTime);
+      timelinePhotos.push({
+        uuid: key,
+        fileId: f.id,
+        fileName: f.name,
+        mimeType: f.mimeType || 'image/jpeg',
+        modifiedTime: f.modifiedTime,
+        data: sameMod ? prev?.data : undefined,
+      });
+    }
+
+    if (timelinePhotos.length > 0) {
+      await putPhotosBatch(timelinePhotos);
+    }
+
+    return { timelineFolderId, remotePeople };
+  }
+
+  /**
+   * Saves curated People & Milestones config to `timeline/timeline.json` on Google Drive.
+   */
+  async saveTimelineConfigToDrive(
+    people: PersonProfile[],
+    rootFolderId: string,
+    existingTimelineFolderId?: string
+  ): Promise<string> {
+    const timelineFolderId = await this.ensureTimelineFolder(
+      rootFolderId,
+      existingTimelineFolderId
+    );
+    const json = JSON.stringify(
+      { updatedAt: new Date().toISOString(), people },
+      null,
+      2
+    );
+
+    const existing = await this.listFilesInFolder(timelineFolderId, "name = 'timeline.json'");
+    if (existing.length > 0) {
+      await this.authedFetch(
+        `${DRIVE_UPLOAD_API}/files/${existing[0].id}?uploadType=media&supportsAllDrives=true`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+          body: json,
+        }
+      );
+    } else {
+      const metadata = JSON.stringify({
+        name: 'timeline.json',
+        parents: [timelineFolderId],
+        mimeType: 'application/json',
+      });
+      const form = new FormData();
+      form.append('metadata', new Blob([metadata], { type: 'application/json' }));
+      form.append('file', new Blob([json], { type: 'application/json' }));
+
+      await this.authedFetch(
+        `${DRIVE_UPLOAD_API}/files?uploadType=multipart&supportsAllDrives=true`,
+        {
+          method: 'POST',
+          body: form,
+        }
+      );
+    }
+
+    return timelineFolderId;
+  }
+
+  /**
+   * Uploads or replaces a custom Polaroid photo inside `timeline/` on Google Drive.
+   */
+  async uploadTimelinePhoto(
+    photoKey: string,
+    file: File,
+    rootFolderId: string,
+    existingTimelineFolderId?: string,
+    existingPhoto?: PhotoRecord
+  ): Promise<{ photo: PhotoRecord; timelineFolderId: string }> {
+    const timelineFolderId = await this.ensureTimelineFolder(
+      rootFolderId,
+      existingTimelineFolderId
+    );
+    const ext = file.name.toLowerCase().endsWith('.png') ? 'png' : 'jpg';
+    const fileName = `${photoKey.toUpperCase()}.${ext}`;
+    const mimeType = file.type || (ext === 'png' ? 'image/png' : 'image/jpeg');
+
+    let driveMeta: DriveFile;
+
+    if (existingPhoto?.fileId) {
+      const res = await this.authedFetch(
+        `${DRIVE_UPLOAD_API}/files/${existingPhoto.fileId}?uploadType=media&supportsAllDrives=true&fields=id,name,mimeType,modifiedTime`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': mimeType },
+          body: file,
+        }
+      );
+      driveMeta = (await res.json()) as DriveFile;
+    } else {
+      const metadata = JSON.stringify({
+        name: fileName,
+        parents: [timelineFolderId],
+        mimeType,
+      });
+      const form = new FormData();
+      form.append('metadata', new Blob([metadata], { type: 'application/json' }));
+      form.append('file', file);
+
+      const res = await this.authedFetch(
+        `${DRIVE_UPLOAD_API}/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,mimeType,modifiedTime`,
+        {
+          method: 'POST',
+          body: form,
+        }
+      );
+      driveMeta = (await res.json()) as DriveFile;
+    }
+
+    const data = await file.arrayBuffer();
+    const photoRecord: PhotoRecord = {
+      uuid: photoKey.toUpperCase(),
+      fileId: driveMeta.id,
+      fileName: driveMeta.name || fileName,
+      mimeType: driveMeta.mimeType || mimeType,
+      modifiedTime: driveMeta.modifiedTime,
+      data,
+    };
+    await putPhoto(photoRecord);
+    return { photo: photoRecord, timelineFolderId };
   }
 }
 
