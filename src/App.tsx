@@ -751,6 +751,17 @@ export function App() {
     [settings]
   );
 
+  const handleOpenEntryFromPeople = useCallback(
+    (uuid: string) => {
+      guardUnsaved(() => {
+        setSelectedUuid(uuid);
+        setActiveView('timeline');
+        setMobileShowEditor(true);
+      });
+    },
+    [guardUnsaved]
+  );
+
   const people = settings.people && settings.people.length > 0 ? settings.people : DEFAULT_PEOPLE;
 
   if (!booted) {
@@ -804,6 +815,17 @@ export function App() {
               onExportBackup={handleExportBackup}
             />
           </div>
+        ) : activeView === 'people' ? (
+          <div className="flex-1 min-w-0 h-full">
+            <PeopleView
+              entries={entries}
+              photosByUuid={photosByUuid}
+              people={people}
+              selectedUuid={selectedUuid}
+              onOpenInEditor={handleOpenEntryFromPeople}
+              onUpdatePeople={handleUpdatePeople}
+            />
+          </div>
         ) : (
           <>
             {/* Middle Pane: Timeline / On This Day / Calendar / Photos */}
@@ -836,15 +858,6 @@ export function App() {
                   selectedUuid={selectedUuid}
                   onSelectEntry={handleSelectEntry}
                   onBlobLoaded={handleBlobLoaded}
-                />
-              ) : activeView === 'people' ? (
-                <PeopleView
-                  entries={entries}
-                  photosByUuid={photosByUuid}
-                  people={people}
-                  selectedUuid={selectedUuid}
-                  onSelectEntry={handleSelectEntry}
-                  onUpdatePeople={handleUpdatePeople}
                 />
               ) : (
                 <TimelineList

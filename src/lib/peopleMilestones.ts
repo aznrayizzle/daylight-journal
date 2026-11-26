@@ -1,10 +1,15 @@
 import type { JournalEntry, PersonProfile, PhotoRecord } from '../types';
 import { getEntryDateParts } from './dateUtils';
 
+export type MilestoneFilterGroup = 'milestones' | 'trips' | 'family';
+
 export interface MilestoneMatch {
   entry: JournalEntry;
   category: string;
+  filterGroup: MilestoneFilterGroup;
+  color: string;
   label?: string;
+  summary: string;
   isPinned: boolean;
   isStarred: boolean;
   isFirstMention: boolean;
@@ -14,6 +19,8 @@ export interface MilestoneMatch {
 
 interface MilestoneRule {
   category: string;
+  filterGroup: MilestoneFilterGroup;
+  color: string;
   weight: number;
   patterns: RegExp[];
 }
@@ -21,6 +28,8 @@ interface MilestoneRule {
 const PARTNER_RULES: MilestoneRule[] = [
   {
     category: 'Wedding & Marriage',
+    filterGroup: 'milestones',
+    color: '#B84A62',
     weight: 10,
     patterns: [
       /\b(wedding|married|marriage|honeymoon|ceremony|vows|eloped|courthouse wedding)\b/i,
@@ -28,11 +37,15 @@ const PARTNER_RULES: MilestoneRule[] = [
   },
   {
     category: 'Engagement',
+    filterGroup: 'milestones',
+    color: '#C85A43',
     weight: 10,
     patterns: [/\b(engaged|engagement|proposed|proposal|fianc[eé]e?|she said yes|engagement ring)\b/i],
   },
   {
     category: 'Baby & Family',
+    filterGroup: 'family',
+    color: '#2563EB',
     weight: 9,
     patterns: [
       /\b(pregnant|pregnancy|ultrasound|due date|baby shower|gender reveal|gave birth|delivery room|newborn)\b/i,
@@ -40,6 +53,8 @@ const PARTNER_RULES: MilestoneRule[] = [
   },
   {
     category: 'How We Met & Dating',
+    filterGroup: 'milestones',
+    color: '#1B4965',
     weight: 8,
     patterns: [
       /\b(first date|asked her out|asked him out|started dating|official|girlfriend|boyfriend|met on hinge|met on bumble|met on coffee)\b/i,
@@ -47,6 +62,8 @@ const PARTNER_RULES: MilestoneRule[] = [
   },
   {
     category: 'Home & Moving',
+    filterGroup: 'milestones',
+    color: '#2D7A5E',
     weight: 8,
     patterns: [
       /\b(moved in|moving in|bought a house|new house|closed on the house|got the keys|new apartment|moving day)\b/i,
@@ -54,6 +71,8 @@ const PARTNER_RULES: MilestoneRule[] = [
   },
   {
     category: 'Trips & Adventures',
+    filterGroup: 'trips',
+    color: '#287B94',
     weight: 6,
     patterns: [
       /\b(vacation|road trip|flew to|flight to|airport|honeymoon|national park|trip to|europe|japan|hawaii|cancun|italy|paris|iceland|mexico|alaska|cruise)\b/i,
@@ -61,6 +80,8 @@ const PARTNER_RULES: MilestoneRule[] = [
   },
   {
     category: 'Anniversaries & Celebrations',
+    filterGroup: 'family',
+    color: '#A94A3E',
     weight: 6,
     patterns: [/\b(anniversary|birthday|valentine'?s|new year'?s|christmas|thanksgiving)\b/i],
   },
@@ -69,11 +90,15 @@ const PARTNER_RULES: MilestoneRule[] = [
 const CHILD_RULES: MilestoneRule[] = [
   {
     category: 'Birth & Arrival',
+    filterGroup: 'milestones',
+    color: '#1B4965',
     weight: 10,
     patterns: [/\b(was born|born today|birth|delivery|came home from the hospital|newborn|arrived)\b/i],
   },
   {
     category: 'Monthly & Birthday',
+    filterGroup: 'milestones',
+    color: '#C85A43',
     weight: 9,
     patterns: [
       /\b(\d+\s*months?(\s*old)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*months?\b/i,
@@ -82,6 +107,8 @@ const CHILD_RULES: MilestoneRule[] = [
   },
   {
     category: 'Firsts & Growth',
+    filterGroup: 'milestones',
+    color: '#2D7A5E',
     weight: 9,
     patterns: [
       /\b(first smile|first laugh|rolled over|rolling over|crawling|crawled|first step|first steps|started walking|walked|first word|first words|first tooth|teething|solid food|solids|sleeping through|slept through|sat up|sitting up|stood up|standing|daycare|preschool|first day of|pediatrician|checkup)\b/i,
@@ -89,6 +116,8 @@ const CHILD_RULES: MilestoneRule[] = [
   },
   {
     category: 'Trips & Outings',
+    filterGroup: 'trips',
+    color: '#287B94',
     weight: 6,
     patterns: [
       /\b(first flight|trip|vacation|zoo|aquarium|beach|museum|road trip|airport|flew)\b/i,
@@ -96,6 +125,8 @@ const CHILD_RULES: MilestoneRule[] = [
   },
   {
     category: 'Holidays & Celebrations',
+    filterGroup: 'family',
+    color: '#B84A62',
     weight: 5,
     patterns: [/\b(christmas|thanksgiving|halloween|easter|lunar new year|new year|party)\b/i],
   },
@@ -104,6 +135,8 @@ const CHILD_RULES: MilestoneRule[] = [
 const GENERAL_RULES: MilestoneRule[] = [
   {
     category: 'Big Moments',
+    filterGroup: 'milestones',
+    color: '#C85A43',
     weight: 8,
     patterns: [
       /\b(wedding|engaged|graduat|birthday|anniversary|new job|promotion|moved|born|baby)\b/i,
@@ -111,15 +144,33 @@ const GENERAL_RULES: MilestoneRule[] = [
   },
   {
     category: 'Trips & Outings',
+    filterGroup: 'trips',
+    color: '#287B94',
     weight: 6,
     patterns: [/\b(trip|vacation|flight|road trip|camping|concert|festival)\b/i],
   },
   {
     category: 'Celebrations',
+    filterGroup: 'family',
+    color: '#B84A62',
     weight: 5,
     patterns: [/\b(christmas|thanksgiving|new year|celebrat|reunion)\b/i],
   },
 ];
+
+function buildOneLineSummary(entry: JournalEntry, customLabel?: string): string {
+  if (customLabel && customLabel.trim()) return customLabel.trim();
+  const firstLine = entry.entryText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find(Boolean);
+  if (!firstLine) return 'Untitled memory';
+  const cleaned = firstLine
+    .replace(/^#+\s*/, '')
+    .replace(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday):\s*/i, '');
+  const sentence = cleaned.split(/(?<=[.!?])\s+/)[0] || cleaned;
+  return sentence.length > 78 ? `${sentence.slice(0, 75).trimEnd()}…` : sentence;
+}
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -213,7 +264,10 @@ export function buildPersonHighlightReel(
       milestones.push({
         entry,
         category: pinned.category || 'Pinned Milestone',
+        filterGroup: 'milestones',
+        color: '#C85A43',
         label: pinned.label,
+        summary: buildOneLineSummary(entry, pinned.label),
         isPinned: true,
         isStarred: entry.starred,
         isFirstMention,
@@ -227,6 +281,8 @@ export function buildPersonHighlightReel(
     if (isHidden) continue;
 
     let bestCategory = '';
+    let bestFilterGroup: MilestoneFilterGroup = 'milestones';
+    let bestColor = '#287B94';
     let bestScore = 0;
 
     for (const rule of rules) {
@@ -235,6 +291,8 @@ export function buildPersonHighlightReel(
           if (rule.weight > bestScore) {
             bestScore = rule.weight;
             bestCategory = rule.category;
+            bestFilterGroup = rule.filterGroup;
+            bestColor = rule.color;
           }
           break;
         }
@@ -243,16 +301,25 @@ export function buildPersonHighlightReel(
 
     if (isFirstMention) {
       bestScore = Math.max(bestScore, 9);
-      if (!bestCategory) bestCategory = 'First Mention';
+      if (!bestCategory) {
+        bestCategory = 'First Mention';
+        bestFilterGroup = 'milestones';
+        bestColor = '#1B4965';
+      }
     } else if (entry.starred && bestScore === 0) {
       bestScore = 7;
       bestCategory = 'Favorite Memory';
+      bestFilterGroup = 'milestones';
+      bestColor = '#D97706';
     }
 
     if (bestScore > 0) {
       milestones.push({
         entry,
         category: bestCategory,
+        filterGroup: bestFilterGroup,
+        color: bestColor,
+        summary: buildOneLineSummary(entry),
         isPinned: false,
         isStarred: entry.starred,
         isFirstMention,
@@ -273,7 +340,10 @@ export function buildPersonHighlightReel(
       milestones.push({
         entry,
         category: pinned.category || 'Pinned Milestone',
+        filterGroup: 'milestones',
+        color: '#C85A43',
         label: pinned.label,
+        summary: buildOneLineSummary(entry, pinned.label),
         isPinned: true,
         isStarred: entry.starred,
         isFirstMention: false,
