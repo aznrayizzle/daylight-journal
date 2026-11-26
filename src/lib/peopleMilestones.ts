@@ -246,6 +246,17 @@ export function extractMentionSnippet(text: string, regex: RegExp): string {
   return `${prefix}${cleaned.slice(start, end).trim()}${suffix}`;
 }
 
+function entryHasPhoto(
+  entry: JournalEntry,
+  photosByUuid?: Map<string, PhotoRecord>
+): boolean {
+  if (!photosByUuid) return false;
+  const upper = entry.uuid.toUpperCase();
+  if (photosByUuid.has(upper) || photosByUuid.has(upper.replace(/-/g, ''))) return true;
+  const stem = entry.fileName.replace(/\.doentry$/i, '').toUpperCase();
+  return photosByUuid.has(stem) || photosByUuid.has(stem.replace(/-/g, ''));
+}
+
 function passesStartDate(entry: JournalEntry, startDate?: string): boolean {
   if (!startDate || !startDate.trim()) return true;
   return entryToDateKey(entry) >= startDate.trim();
@@ -417,9 +428,12 @@ export function buildPersonHighlightReel(
   const trimmedAuto: MilestoneMatch[] = [];
   for (const list of autoByYear.values()) {
     list.sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      const aHasPhoto = photosByUuid?.has(a.entry.uuid.toUpperCase()) ? 1 : 0;
-      const bHasPhoto = photosByUuid?.has(b.entry.uuid.toUpperCase()) ? 1 : 0;
+      const aHasPhoto = entryHasPhoto(a.entry, photosByUuid) ? 1 : 0;
+      const bHasPhoto = entryHasPhoto(b.entry, photosByUuid) ? 1 : 0;
+      // Strongly prefer entries with photos (+5 effective score) so Polaroids show real pictures
+      const aTotal = a.score + aHasPhoto * 5;
+      const bTotal = b.score + bHasPhoto * 5;
+      if (bTotal !== aTotal) return bTotal - aTotal;
       if (bHasPhoto !== aHasPhoto) return bHasPhoto - aHasPhoto;
       return b.entry.entryText.length - a.entry.entryText.length;
     });

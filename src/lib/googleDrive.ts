@@ -480,7 +480,17 @@ class GoogleDriveService {
         total: 0,
         message: 'Indexing photos folder…',
       });
-      const photoFiles = await this.listFilesInFolder(photosFolderId);
+      const topPhotoItems = await this.listFilesInFolder(photosFolderId);
+      const photoSubfolders = topPhotoItems.filter(
+        (f) => f.mimeType === 'application/vnd.google-apps.folder'
+      );
+      const nestedPhotoItems =
+        photoSubfolders.length > 0
+          ? (
+              await Promise.all(photoSubfolders.map((sub) => this.listFilesInFolder(sub.id)))
+            ).flat()
+          : [];
+      const photoFiles = [...topPhotoItems, ...nestedPhotoItems];
       const existingPhotos = await getAllPhotos();
       const existingMap = new Map(existingPhotos.map((p) => [p.uuid, p]));
       const remotePhotoUuids = new Set<string>();

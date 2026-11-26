@@ -313,7 +313,11 @@ export const PeopleView = memo(function PeopleView({
       const custom = photosByUuid.get(m.customPhotoKey.toUpperCase());
       if (custom) return custom;
     }
-    return photosByUuid.get(m.entry.uuid.toUpperCase());
+    const upper = m.entry.uuid.toUpperCase();
+    const direct = photosByUuid.get(upper) ?? photosByUuid.get(upper.replace(/-/g, ''));
+    if (direct) return direct;
+    const stem = m.entry.fileName.replace(/\.doentry$/i, '').toUpperCase();
+    return photosByUuid.get(stem) ?? photosByUuid.get(stem.replace(/-/g, ''));
   };
 
   // Detect if any visible milestone has a Drive photo that isn't cached yet while signed out

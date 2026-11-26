@@ -183,7 +183,13 @@ export function App() {
   const photosByUuid = useMemo(() => {
     const map = new Map<string, PhotoRecord>();
     for (const p of photos) {
-      map.set(p.uuid.toUpperCase(), p);
+      const upper = p.uuid.toUpperCase();
+      map.set(upper, p);
+      // Also index hyphen-stripped key so Day One / Journaley UUID formats always match
+      const compact = upper.replace(/-/g, '');
+      if (compact !== upper) {
+        map.set(compact, p);
+      }
     }
     return map;
   }, [photos]);
