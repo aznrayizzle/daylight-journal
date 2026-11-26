@@ -50,6 +50,8 @@ export interface PinnedMilestone {
   entryUuid: string;
   label?: string;
   category?: string;
+  /** Optional custom photo key stored in IndexedDB `photos` store (overrides entry photo on Polaroid only). */
+  customPhotoKey?: string;
 }
 
 export interface PersonProfile {
@@ -58,6 +60,8 @@ export interface PersonProfile {
   aliases: string[];
   role: 'partner' | 'child' | 'family' | 'friend' | 'other';
   accent: 'rose' | 'sky' | 'amber' | 'emerald' | 'violet';
+  /** Optional YYYY-MM-DD cutoff — entries earlier than this are excluded from this person's timeline. */
+  startDate?: string;
   pinnedMilestones: PinnedMilestone[];
   hiddenEntryUuids: string[];
 }

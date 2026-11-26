@@ -1,16 +1,22 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDownUp,
+  Calendar,
   ChevronLeft,
   ChevronRight,
+  CloudOff,
   ExternalLink,
   EyeOff,
   Heart,
+  ImagePlus,
+  Images,
+  Loader2,
   MapPin,
   Pencil,
   Pin,
   PinOff,
   Plus,
+  RotateCcw,
   Sparkles,
   Star,
   Users,
@@ -34,8 +40,15 @@ interface PeopleViewProps {
   photosByUuid: Map<string, PhotoRecord>;
   people: PersonProfile[];
   selectedUuid: string | null;
+  isDriveSignedIn: boolean;
+  isDriveMode: boolean;
+  pickingGooglePhoto: boolean;
+  onSyncDrive: () => void;
   onOpenInEditor: (uuid: string) => void;
   onUpdatePeople: (next: PersonProfile[]) => Promise<void>;
+  onSetMilestonePhoto: (personId: string, entryUuid: string, file: File) => Promise<void>;
+  onPickMilestoneGooglePhoto: (personId: string, entryUuid: string) => Promise<void>;
+  onResetMilestonePhoto: (personId: string, entryUuid: string) => Promise<void>;
 }
 
 const YEAR_BAR_PALETTE = [
@@ -58,8 +71,15 @@ export const PeopleView = memo(function PeopleView({
   photosByUuid,
   people,
   selectedUuid,
+  isDriveSignedIn,
+  isDriveMode,
+  pickingGooglePhoto,
+  onSyncDrive,
   onOpenInEditor,
   onUpdatePeople,
+  onSetMilestonePhoto,
+  onPickMilestoneGooglePhoto,
+  onResetMilestonePhoto,
 }: PeopleViewProps) {
   const [selectedPersonId, setSelectedPersonId] = useState<string>(people[0]?.id ?? 'lucy');
   const [tab, setTab] = useState<'timeline' | 'all'>('timeline');
@@ -72,10 +92,12 @@ export const PeopleView = memo(function PeopleView({
   const [newRole, setNewRole] = useState<PersonProfile['role']>('family');
   const [editingSummaryUuid, setEditingSummaryUuid] = useState<string | null>(null);
   const [summaryInput, setSummaryInput] = useState('');
+  const [editingStartDate, setEditingStartDate] = useState(false);
   const [allFilterQuery, setAllFilterQuery] = useState('');
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const yearRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const customPhotoInputRef = useRef<HTMLInputElement>(null);
 
   const activePerson = useMemo(
     () => people.find((p) => p.id === selectedPersonId) ?? people[0],
@@ -84,8 +106,8 @@ export const PeopleView = memo(function PeopleView({
 
   const { mentions, milestones } = useMemo(() => {
     if (!activePerson) return { mentions: [], milestones: [] };
-    return buildPersonHighlightReel(entries, activePerson);
-  }, [entries, activePerson]);
+    return buildPersonHighlightReel(entries, activePerson, photosByUuid);
+  }, [entries, activePerson, photosByUuid]);
 
   const stats = useMemo(
     () => computePersonStats(mentions, photosByUuid),
@@ -220,15 +242,32 @@ export const PeopleView = memo(function PeopleView({
     setAddingPerson(false);
   };
 
+  const handleUpdateStartDate = async (nextDate: string) => {
+    if (!activePerson) return;
+    const updated = people.map((p) =>
+      p.id === activePerson.id ? { ...p, startDate: nextDate } : p
+    );
+    await onUpdatePeople(updated);
+    setEditingStartDate(false);
+  };
+
   const handlePinMilestone = async (entryUuid: string, label?: string) => {
     if (!activePerson) return;
     const upper = entryUuid.toUpperCase();
     const updated = people.map((p) => {
       if (p.id !== activePerson.id) return p;
+      const existing = p.pinnedMilestones.find((m) => m.entryUuid.toUpperCase() === upper);
       const filtered = p.pinnedMilestones.filter((m) => m.entryUuid.toUpperCase() !== upper);
       return {
         ...p,
-        pinnedMilestones: [...filtered, { entryUuid: upper, label: label?.trim() || undefined }],
+        pinnedMilestones: [
+          ...filtered,
+          {
+            ...existing,
+            entryUuid: upper,
+            label: label?.trim() || undefined,
+          },
+        ],
         hiddenEntryUuids: p.hiddenEntryUuids.filter((u) => u.toUpperCase() !== upper),
       };
     });
@@ -269,9 +308,26 @@ export const PeopleView = memo(function PeopleView({
 
   if (!activePerson) return null;
 
+  const resolveMilestonePhoto = (m: MilestoneMatch): PhotoRecord | undefined => {
+    if (m.customPhotoKey) {
+      const custom = photosByUuid.get(m.customPhotoKey.toUpperCase());
+      if (custom) return custom;
+    }
+    return photosByUuid.get(m.entry.uuid.toUpperCase());
+  };
+
+  // Detect if any visible milestone has a Drive photo that isn't cached yet while signed out
+  const hasUncachedDrivePhotos = useMemo(() => {
+    if (!isDriveMode || isDriveSignedIn) return false;
+    return filteredMilestones.some((m) => {
+      const p = resolveMilestonePhoto(m);
+      return Boolean(p && p.fileId && !p.data && !p.blob);
+    });
+  }, [isDriveMode, isDriveSignedIn, filteredMilestones, photosByUuid]);
+
   const renderPolaroidCard = (m: MilestoneMatch, position: 'top' | 'bottom', tiltIdx: number) => {
     const isSel = activeMilestone?.entry.uuid === m.entry.uuid;
-    const photo = photosByUuid.get(m.entry.uuid.toUpperCase());
+    const photo = resolveMilestonePhoto(m);
     const tilt = TILTS[tiltIdx % TILTS.length];
     const shortDate = formatShortDate(m.entry.creationDate);
     const { year } = getEntryDateParts(m.entry);
@@ -292,7 +348,7 @@ export const PeopleView = memo(function PeopleView({
 
     const polaroidFrame = (
       <div
-        className={`p-1.5 pb-3.5 bg-white dark:bg-slate-100 rounded-[2px] shadow-md border transition-all duration-300 ${tilt} group-hover:rotate-0 group-hover:-translate-y-1 ${
+        className={`relative p-1.5 pb-3.5 bg-white dark:bg-slate-100 rounded-[2px] shadow-md border transition-all duration-300 ${tilt} group-hover:rotate-0 group-hover:-translate-y-1 ${
           isSel
             ? 'ring-2 ring-sky-500 border-sky-500 !rotate-0 scale-[1.04] shadow-lg'
             : 'border-slate-200/90'
@@ -300,7 +356,7 @@ export const PeopleView = memo(function PeopleView({
       >
         <div className="w-[164px] h-[108px] overflow-hidden bg-slate-100 relative">
           {photo ? (
-            <PhotoThumbnail photo={photo} className="w-full h-full object-cover" />
+            <PhotoThumbnail photo={photo} eager className="w-full h-full object-cover" />
           ) : (
             <div
               className="w-full h-full p-2.5 flex flex-col justify-between text-left"
@@ -322,9 +378,23 @@ export const PeopleView = memo(function PeopleView({
           {m.isPinned && (
             <span
               title="Pinned milestone"
-              className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-slate-900/70 text-white flex items-center justify-center"
+              className="absolute top-1.5 left-1.5 w-5 h-5 rounded-full bg-slate-900/70 text-white flex items-center justify-center"
             >
               <Pin className="w-2.5 h-2.5" />
+            </span>
+          )}
+          {!m.isPinned && (
+            <span
+              role="button"
+              tabIndex={-1}
+              onClick={(e) => {
+                e.stopPropagation();
+                void handleHideFromHighlights(m.entry.uuid);
+              }}
+              title="Remove from highlight reel"
+              className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-slate-900/70 hover:bg-rose-600 text-white opacity-0 group-hover:opacity-100 transition flex items-center justify-center cursor-pointer"
+            >
+              <X className="w-3 h-3" />
             </span>
           )}
         </div>
@@ -370,9 +440,11 @@ export const PeopleView = memo(function PeopleView({
     );
   };
 
-  const activePhoto = activeMentionEntry
-    ? photosByUuid.get(activeMentionEntry.uuid.toUpperCase())
-    : undefined;
+  const activePhoto = activeMilestone
+    ? resolveMilestonePhoto(activeMilestone)
+    : activeMentionEntry
+      ? photosByUuid.get(activeMentionEntry.uuid.toUpperCase())
+      : undefined;
   const activeIdx = activeMilestone
     ? filteredMilestones.findIndex((m) => m.entry.uuid === activeMilestone.entry.uuid)
     : -1;
@@ -494,10 +566,10 @@ export const PeopleView = memo(function PeopleView({
           </div>
         )}
 
-        {/* Editorial Headline + Chapter Filters + Year Jump */}
+        {/* Editorial Headline + Start Date + Chapter Filters + Year Jump */}
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-3 pt-1">
           <div>
-            <div className="flex items-center gap-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
               {stats.firstDate && stats.latestDate && (
                 <span className="font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
                   {formatShortDate(stats.firstDate)} — {formatShortDate(stats.latestDate)}
@@ -506,6 +578,42 @@ export const PeopleView = memo(function PeopleView({
               <span className="text-slate-400">
                 · {stats.totalMentions} entries · {stats.photosCount} photos
               </span>
+
+              {editingStartDate ? (
+                <span className="inline-flex items-center gap-1">
+                  <input
+                    type="date"
+                    defaultValue={activePerson.startDate || ''}
+                    onChange={(e) => void handleUpdateStartDate(e.target.value)}
+                    className="text-xs px-1.5 py-0.5 rounded border border-sky-400 bg-white dark:bg-slate-900"
+                  />
+                  <button
+                    onClick={() => setEditingStartDate(false)}
+                    className="text-[11px] text-slate-400 hover:text-slate-700 cursor-pointer"
+                  >
+                    Done
+                  </button>
+                </span>
+              ) : (
+                <button
+                  onClick={() => setEditingStartDate(true)}
+                  title="Change earliest date shown on this timeline"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-900 text-slate-500 dark:text-slate-400 hover:text-sky-600 dark:hover:text-sky-400 cursor-pointer"
+                >
+                  <Calendar className="w-3 h-3" />
+                  {activePerson.startDate ? `From ${activePerson.startDate}` : 'All dates'}
+                </button>
+              )}
+
+              {hasUncachedDrivePhotos && (
+                <button
+                  onClick={onSyncDrive}
+                  className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 font-semibold hover:brightness-95 cursor-pointer"
+                >
+                  <CloudOff className="w-3 h-3" />
+                  Reconnect Drive to load photos
+                </button>
+              )}
             </div>
             <h2 className="font-serif italic text-2xl sm:text-3xl text-slate-900 dark:text-white leading-tight mt-0.5">
               {activePerson.name}’s Story
@@ -721,8 +829,22 @@ export const PeopleView = memo(function PeopleView({
                       </div>
                     </div>
 
-                    {/* Editable 1-line Milestone Summary Bar */}
+                    {/* Editable 1-line Milestone Summary + Replace Polaroid Photo Bar */}
                     <div className="px-4 sm:px-5 py-2.5 border-b border-slate-100 dark:border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <input
+                        ref={customPhotoInputRef}
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          e.target.value = '';
+                          if (f && activeMentionEntry) {
+                            void onSetMilestonePhoto(activePerson.id, activeMentionEntry.uuid, f);
+                          }
+                        }}
+                        className="hidden"
+                      />
+
                       {editingSummaryUuid === activeMentionEntry.uuid ? (
                         <div className="flex-1 flex items-center gap-2">
                           <input
@@ -763,7 +885,51 @@ export const PeopleView = memo(function PeopleView({
                               {activeMilestone.summary}
                             </span>
                           </div>
-                          <div className="flex items-center gap-1.5 shrink-0">
+                          <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                            <button
+                              onClick={() =>
+                                void onPickMilestoneGooglePhoto(
+                                  activePerson.id,
+                                  activeMentionEntry.uuid
+                                )
+                              }
+                              disabled={pickingGooglePhoto}
+                              title="Pick a Polaroid photo from Google Photos (does not change the entry's original photo)"
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/20 font-medium cursor-pointer disabled:opacity-50"
+                            >
+                              {pickingGooglePhoto ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <Images className="w-3 h-3" />
+                              )}
+                              {pickingGooglePhoto ? 'Picking…' : 'Google Photos'}
+                            </button>
+
+                            <button
+                              onClick={() => customPhotoInputRef.current?.click()}
+                              title="Upload a custom Polaroid photo from this device"
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-slate-500 hover:text-sky-600 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                            >
+                              <ImagePlus className="w-3 h-3" />
+                              Replace photo
+                            </button>
+
+                            {activeMilestone.customPhotoKey && (
+                              <button
+                                onClick={() =>
+                                  void onResetMilestonePhoto(
+                                    activePerson.id,
+                                    activeMentionEntry.uuid
+                                  )
+                                }
+                                title="Revert Polaroid back to the entry's original photo"
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-slate-400 hover:text-amber-600 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                              >
+                                <RotateCcw className="w-3 h-3" />
+                                Reset photo
+                              </button>
+                            )}
+
                             <button
                               onClick={() => {
                                 setEditingSummaryUuid(activeMentionEntry.uuid);

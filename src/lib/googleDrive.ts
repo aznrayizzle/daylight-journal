@@ -510,6 +510,7 @@ class GoogleDriveService {
       }
 
       for (const prev of existingPhotos) {
+        if (prev.uuid.startsWith('MILESTONE_')) continue;
         if (!prev.fileId || !remotePhotoUuids.has(prev.uuid)) {
           await deletePhotoFromDb(prev.uuid);
         }
@@ -517,6 +518,7 @@ class GoogleDriveService {
     } else {
       const existingPhotos = await getAllPhotos();
       for (const prev of existingPhotos) {
+        if (prev.uuid.startsWith('MILESTONE_')) continue;
         if (!prev.fileId) {
           await deletePhotoFromDb(prev.uuid);
         }

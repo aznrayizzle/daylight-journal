@@ -213,4 +213,26 @@ describe('doentry XML parser and lossless serializer', () => {
     expect(caydenReel.milestones).toHaveLength(1);
     expect(caydenReel.milestones[0].entry.uuid).toBe(eCayden8m.uuid);
   });
+
+  it('excludes pre-startDate backdated entries and ignores unrelated weekly log sentences', () => {
+    const lucy = DEFAULT_PEOPLE.find((p) => p.id === 'lucy')!;
+    const eBackdated = createNewEntry({
+      creationDate: '2010-05-01T12:00:00Z',
+      entryText: 'Backdated note mentioning Lucy and a trip to Hawaii.',
+    });
+    const eFirst = createNewEntry({
+      creationDate: '2016-05-01T12:00:00Z',
+      entryText: 'First date with Lucy at a coffee shop.',
+    });
+    const eNoisyWeek = createNewEntry({
+      creationDate: '2017-05-31T12:00:00Z',
+      entryText:
+        'Monday: Woke up at 5:30am to catch my flight for work.\n\nTuesday: Antoniea started as an intern today.\n\nWednesday: Regular office meetings.\n\nThursday: Went to the gym.\n\nFriday: Grabbed groceries with Lucy.',
+    });
+
+    const reel = buildPersonHighlightReel([eBackdated, eFirst, eNoisyWeek], lucy);
+    expect(reel.mentions.map((m) => m.entry.uuid)).not.toContain(eBackdated.uuid);
+    expect(reel.milestones.map((m) => m.entry.uuid)).toContain(eFirst.uuid);
+    expect(reel.milestones.map((m) => m.entry.uuid)).not.toContain(eNoisyWeek.uuid);
+  });
 });

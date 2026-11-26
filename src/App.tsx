@@ -764,6 +764,106 @@ export function App() {
 
   const people = settings.people && settings.people.length > 0 ? settings.people : DEFAULT_PEOPLE;
 
+  const handleSetMilestonePhoto = useCallback(
+    async (personId: string, entryUuid: string, file: File) => {
+      try {
+        const key = `MILESTONE_${personId.toUpperCase()}_${entryUuid.toUpperCase()}`;
+        const data = await file.arrayBuffer();
+        const photo: PhotoRecord = {
+          uuid: key,
+          fileName: file.name || `${key}.jpg`,
+          mimeType: file.type || 'image/jpeg',
+          modifiedTime: new Date().toISOString(),
+          data,
+        };
+        await putPhoto(photo);
+        photoCache.setFromBlob(key, file, photo.modifiedTime);
+        setPhotos((prev) => [...prev.filter((p) => p.uuid !== key), photo]);
+
+        const upperEntry = entryUuid.toUpperCase();
+        const nextPeople = people.map((p) => {
+          if (p.id !== personId) return p;
+          const existing = p.pinnedMilestones.find(
+            (m) => m.entryUuid.toUpperCase() === upperEntry
+          );
+          const others = p.pinnedMilestones.filter(
+            (m) => m.entryUuid.toUpperCase() !== upperEntry
+          );
+          return {
+            ...p,
+            pinnedMilestones: [
+              ...others,
+              {
+                ...existing,
+                entryUuid: upperEntry,
+                customPhotoKey: key,
+              },
+            ],
+            hiddenEntryUuids: p.hiddenEntryUuids.filter((u) => u.toUpperCase() !== upperEntry),
+          };
+        });
+        await handleUpdatePeople(nextPeople);
+        showToast('Polaroid photo updated (original journal entry photo unchanged).');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed to save milestone photo.';
+        showToast(msg, 'error');
+      }
+    },
+    [people, handleUpdatePeople, showToast]
+  );
+
+  const handlePickMilestoneGooglePhoto = useCallback(
+    async (personId: string, entryUuid: string) => {
+      if (!settings.clientId.trim()) {
+        setActiveView('settings');
+        showToast(
+          'Enter your Google Cloud OAuth Client ID in Settings and enable Google Photos Picker API.',
+          'error'
+        );
+        return;
+      }
+
+      setPickingGooglePhoto(true);
+      try {
+        const file = await pickPhotoFromGooglePhotos(settings.clientId);
+        setIsDriveSignedIn(driveService.isSignedIn());
+        if (file) {
+          await handleSetMilestonePhoto(personId, entryUuid, file);
+        }
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : 'Failed to pick photo from Google Photos.';
+        showToast(msg, 'error');
+      } finally {
+        setPickingGooglePhoto(false);
+      }
+    },
+    [settings.clientId, handleSetMilestonePhoto, showToast]
+  );
+
+  const handleResetMilestonePhoto = useCallback(
+    async (personId: string, entryUuid: string) => {
+      const key = `MILESTONE_${personId.toUpperCase()}_${entryUuid.toUpperCase()}`;
+      await deletePhotoFromDb(key);
+      photoCache.evict(key);
+      setPhotos((prev) => prev.filter((p) => p.uuid !== key));
+
+      const upperEntry = entryUuid.toUpperCase();
+      const nextPeople = people.map((p) => {
+        if (p.id !== personId) return p;
+        return {
+          ...p,
+          pinnedMilestones: p.pinnedMilestones.map((m) =>
+            m.entryUuid.toUpperCase() === upperEntry ? { ...m, customPhotoKey: undefined } : m
+          ),
+        };
+      });
+      await handleUpdatePeople(nextPeople);
+      showToast('Reverted Polaroid to original entry photo.');
+    },
+    [people, handleUpdatePeople, showToast]
+  );
+
   if (!booted) {
     return (
       <div className="h-full flex items-center justify-center bg-slate-50 dark:bg-slate-950 text-slate-400 text-sm">
@@ -822,8 +922,15 @@ export function App() {
               photosByUuid={photosByUuid}
               people={people}
               selectedUuid={selectedUuid}
+              isDriveSignedIn={isDriveSignedIn}
+              isDriveMode={settings.mode === 'drive'}
+              pickingGooglePhoto={pickingGooglePhoto}
+              onSyncDrive={() => void handleConnectAndSync()}
               onOpenInEditor={handleOpenEntryFromPeople}
               onUpdatePeople={handleUpdatePeople}
+              onSetMilestonePhoto={handleSetMilestonePhoto}
+              onPickMilestoneGooglePhoto={handlePickMilestoneGooglePhoto}
+              onResetMilestonePhoto={handleResetMilestonePhoto}
             />
           </div>
         ) : (

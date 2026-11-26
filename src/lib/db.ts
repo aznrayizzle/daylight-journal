@@ -10,6 +10,7 @@ export const DEFAULT_PEOPLE: PersonProfile[] = [
     aliases: [],
     role: 'partner',
     accent: 'rose',
+    startDate: '2014-09-01',
     pinnedMilestones: [],
     hiddenEntryUuids: [],
   },
@@ -19,6 +20,7 @@ export const DEFAULT_PEOPLE: PersonProfile[] = [
     aliases: [],
     role: 'child',
     accent: 'sky',
+    startDate: '2014-09-01',
     pinnedMilestones: [],
     hiddenEntryUuids: [],
   },
@@ -65,6 +67,15 @@ function getDb(): Promise<IDBPDatabase<JournalDB>> {
 export async function loadSettings(): Promise<AppSettings> {
   const db = await getDb();
   const saved = await db.get('meta', 'settings');
+  const people =
+    saved?.people && saved.people.length > 0
+      ? saved.people.map((p) =>
+          p.startDate === undefined && (p.id === 'lucy' || p.id === 'cayden')
+            ? { ...p, startDate: '2014-09-01' }
+            : p
+        )
+      : DEFAULT_PEOPLE;
+
   return {
     clientId: saved?.clientId ?? '',
     rootFolderId: saved?.rootFolderId ?? DEFAULT_FOLDER_ID,
@@ -74,7 +85,7 @@ export async function loadSettings(): Promise<AppSettings> {
     layoutType: saved?.layoutType,
     lastSyncAt: saved?.lastSyncAt,
     theme: saved?.theme ?? 'system',
-    people: saved?.people && saved.people.length > 0 ? saved.people : DEFAULT_PEOPLE,
+    people,
   };
 }
 
