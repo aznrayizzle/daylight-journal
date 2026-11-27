@@ -83,6 +83,7 @@ export function App() {
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [pickingGooglePhoto, setPickingGooglePhoto] = useState(false);
   const [curatingWithAi, setCuratingWithAi] = useState(false);
+  const [curatingStatus, setCuratingStatus] = useState('');
   const [toast, setToast] = useState<{ type: 'info' | 'error'; message: string } | null>(null);
   const [booted, setBooted] = useState(false);
   const [editorDirty, setEditorDirty] = useState(false);
@@ -951,12 +952,15 @@ export function App() {
       }
 
       setCuratingWithAi(true);
+      setCuratingStatus('Preparing entries…');
       try {
         const curated = await curateMilestonesWithGemini(
           settings.geminiApiKey,
           entries,
-          person
+          person,
+          setCuratingStatus
         );
+        setCuratingStatus('Saving timeline…');
         const nextPeople = people.map((p) =>
           p.id === person.id
             ? {
@@ -974,6 +978,7 @@ export function App() {
         showToast(msg, 'error');
       } finally {
         setCuratingWithAi(false);
+        setCuratingStatus('');
       }
     },
     [settings.geminiApiKey, entries, people, handleUpdatePeople, showToast]
@@ -1041,6 +1046,7 @@ export function App() {
               isDriveMode={settings.mode === 'drive'}
               pickingGooglePhoto={pickingGooglePhoto}
               curatingWithAi={curatingWithAi}
+              curatingStatus={curatingStatus}
               onSyncDrive={() => void handleConnectAndSync()}
               onOpenInEditor={handleOpenEntryFromPeople}
               onUpdatePeople={handleUpdatePeople}

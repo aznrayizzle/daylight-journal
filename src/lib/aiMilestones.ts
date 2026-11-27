@@ -1,6 +1,6 @@
 import type { JournalEntry, PersonProfile, PinnedMilestone } from '../types';
 import { entryToDateKey } from './dateUtils';
-import { getPersonMentions } from './peopleMilestones';
+import { buildPersonRegex, getPersonMentions } from './peopleMilestones';
 
 interface AiMilestoneItem {
   uuid: string;
@@ -9,6 +9,42 @@ interface AiMilestoneItem {
 }
 
 const GEMINI_MODELS = ['gemini-4-hydrogen', 'gemini-3.8-flash', 'gemini-2.5-flash'];
+const MODEL_TIMEOUT_MS = 40_000;
+
+/**
+ * Extracts only the sentences mentioning the person (plus 1 sentence of nearby context),
+ * keeping the prompt compact (~70% smaller) and focused on the person rather than work logs.
+ */
+function extractPersonFocusedExcerpt(text: string, personRegex: RegExp, maxChars = 340): string {
+  const sentences = text
+    .split(/\r?\n+|(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const picked: string[] = [];
+  let totalLen = 0;
+
+  for (let i = 0; i < sentences.length; i++) {
+    if (!personRegex.test(sentences[i])) continue;
+    const chunk = sentences[i].replace(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday):\s*/i, '');
+    if (totalLen + chunk.length > maxChars && picked.length > 0) break;
+    picked.push(chunk);
+    totalLen += chunk.length + 1;
+    // Include immediately following sentence if short and still within budget
+    if (i + 1 < sentences.length && !personRegex.test(sentences[i + 1])) {
+      const next = sentences[i + 1];
+      if (totalLen + next.length <= maxChars) {
+        picked.push(next);
+        totalLen += next.length + 1;
+      }
+    }
+  }
+
+  if (picked.length === 0) {
+    return text.replace(/\s+/g, ' ').trim().slice(0, maxChars);
+  }
+  return picked.join(' ').slice(0, maxChars);
+}
 
 /**
  * Uses the user's own Gemini API key (client-side, directly to Google AI) to read entries
@@ -17,7 +53,8 @@ const GEMINI_MODELS = ['gemini-4-hydrogen', 'gemini-3.8-flash', 'gemini-2.5-flas
 export async function curateMilestonesWithGemini(
   apiKey: string,
   entries: JournalEntry[],
-  person: PersonProfile
+  person: PersonProfile,
+  onStatus?: (message: string) => void
 ): Promise<PinnedMilestone[]> {
   const key = apiKey.trim();
   if (!key) {
@@ -29,7 +66,7 @@ export async function curateMilestonesWithGemini(
     throw new Error(`No entries found mentioning ${person.name}.`);
   }
 
-  // Build a compact chronological digest of entries mentioning this person
+  const personRegex = buildPersonRegex(person);
   const chronological = [...mentions].sort((a, b) =>
     a.entry.creationDate.localeCompare(b.entry.creationDate)
   );
@@ -37,9 +74,8 @@ export async function curateMilestonesWithGemini(
   const validUuids = new Set(chronological.map((m) => m.entry.uuid.toUpperCase()));
   const digestLines = chronological.map(({ entry }) => {
     const date = entryToDateKey(entry);
-    // Keep up to 900 chars per entry so even 400+ entries fit comfortably in Gemini 2.5 Flash's 1M context
-    const text = entry.entryText.replace(/\s+/g, ' ').trim().slice(0, 900);
-    return `[${entry.uuid.toUpperCase()}] (${date}) ${text}`;
+    const excerpt = extractPersonFocusedExcerpt(entry.entryText, personRegex, 340);
+    return `[${entry.uuid.toUpperCase()}] (${date}) ${excerpt}`;
   });
 
   const roleGuidance =
@@ -65,28 +101,48 @@ ${digestLines.join('\n')}`;
 
   let res: Response | null = null;
   let lastErr = '';
+
   for (const model of GEMINI_MODELS) {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
-    const attempt = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          temperature: 0.2,
-        },
-      }),
-    });
-    if (attempt.ok) {
-      res = attempt;
-      break;
-    }
-    const errBody = await attempt.text().catch(() => '');
-    lastErr = `Gemini API error (${attempt.status} on ${model}): ${errBody.slice(0, 200) || attempt.statusText}`;
-    // Only fall back to the next model on 404 / deprecated model errors
-    if (attempt.status !== 404 && attempt.status !== 400) {
-      throw new Error(lastErr);
+    onStatus?.(`Curating ${chronological.length} entries (${model})…`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
+
+    try {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+      const attempt = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.2,
+          },
+        }),
+      });
+      clearTimeout(timer);
+
+      if (attempt.ok) {
+        res = attempt;
+        break;
+      }
+      const errBody = await attempt.text().catch(() => '');
+      lastErr = `Gemini API error (${attempt.status} on ${model}): ${errBody.slice(0, 180) || attempt.statusText}`;
+      // Fail fast on bad API key (401/403); fall back to next model on 404/400/429/503
+      if (attempt.status === 401 || attempt.status === 403) {
+        throw new Error(lastErr);
+      }
+    } catch (err) {
+      clearTimeout(timer);
+      if (err instanceof Error && err.name === 'AbortError') {
+        lastErr = `${model} timed out after ${MODEL_TIMEOUT_MS / 1000}s — trying fallback…`;
+        continue;
+      }
+      if (err instanceof Error && (err.message.includes('401') || err.message.includes('403'))) {
+        throw err;
+      }
+      lastErr = err instanceof Error ? err.message : `Failed calling ${model}`;
     }
   }
 
@@ -133,7 +189,10 @@ ${digestLines.join('\n')}`;
     const prev = existingByUuid.get(upper);
     curated.push({
       entryUuid: upper,
-      label: typeof item.summary === 'string' && item.summary.trim() ? item.summary.trim() : prev?.label,
+      label:
+        typeof item.summary === 'string' && item.summary.trim()
+          ? item.summary.trim()
+          : prev?.label,
       category:
         typeof item.category === 'string' && item.category.trim()
           ? item.category.trim()

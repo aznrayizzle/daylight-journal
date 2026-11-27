@@ -44,6 +44,7 @@ interface PeopleViewProps {
   isDriveMode: boolean;
   pickingGooglePhoto: boolean;
   curatingWithAi: boolean;
+  curatingStatus?: string;
   onSyncDrive: () => void;
   onOpenInEditor: (uuid: string) => void;
   onUpdatePeople: (next: PersonProfile[]) => Promise<void>;
@@ -77,6 +78,7 @@ export const PeopleView = memo(function PeopleView({
   isDriveMode,
   pickingGooglePhoto,
   curatingWithAi,
+  curatingStatus,
   onSyncDrive,
   onOpenInEditor,
   onUpdatePeople,
@@ -512,7 +514,7 @@ export const PeopleView = memo(function PeopleView({
               ) : (
                 <Sparkles className="w-3.5 h-3.5" />
               )}
-              {curatingWithAi ? 'Curating…' : 'Curate with AI'}
+              {curatingWithAi ? curatingStatus || 'Curating…' : 'Curate with AI'}
             </button>
 
             <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-900 p-0.5 text-xs">
