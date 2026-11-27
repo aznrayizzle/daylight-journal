@@ -4,7 +4,11 @@ import { entryToDateKey, getEntryDateParts } from './dateUtils';
 export type MilestoneFilterGroup = 'milestones' | 'trips' | 'family';
 
 export interface MilestoneMatch {
+  /** Unique key for rendering & selection (supports multiple milestones per weekly entry). */
+  milestoneId: string;
   entry: JournalEntry;
+  /** Effective ISO date for sorting & display (uses customDate if set, else entry.creationDate). */
+  displayDate: string;
   category: string;
   filterGroup: MilestoneFilterGroup;
   color: string;
@@ -320,9 +324,14 @@ export function buildPersonHighlightReel(
 } {
   const personRegex = buildPersonRegex(person);
   const mentions = getPersonMentions(entries, person);
-  const pinnedMap = new Map(
-    person.pinnedMilestones.map((m) => [m.entryUuid.toUpperCase(), m])
-  );
+  // Group pinned milestones by entryUuid (supporting multiple milestones per weekly entry)
+  const pinnedByEntry = new Map<string, typeof person.pinnedMilestones>();
+  for (const m of person.pinnedMilestones) {
+    const key = m.entryUuid.toUpperCase();
+    const list = pinnedByEntry.get(key) ?? [];
+    list.push(m);
+    pinnedByEntry.set(key, list);
+  }
   const hiddenSet = new Set(person.hiddenEntryUuids.map((u) => u.toUpperCase()));
 
   const rules =
@@ -341,51 +350,64 @@ export function buildPersonHighlightReel(
 
   const pinnedMatches: MilestoneMatch[] = [];
   const autoCandidates: MilestoneMatch[] = [];
-  const seenUuids = new Set<string>();
+  const handledEntryUuids = new Set<string>();
+
+  const toDisplayDate = (customDate: string | undefined, fallbackIso: string) =>
+    customDate && /^\d{4}-\d{2}-\d{2}$/.test(customDate)
+      ? `${customDate}T12:00:00Z`
+      : fallbackIso;
 
   for (const { entry, snippet } of mentions) {
     const upperUuid = entry.uuid.toUpperCase();
-    const pinned = pinnedMap.get(upperUuid);
+    const pinnedList = pinnedByEntry.get(upperUuid);
     const isHidden = hiddenSet.has(upperUuid);
     const isFirstMention = earliestMention?.entry.uuid === entry.uuid;
     const proximity = findProximityRuleMatch(entry.entryText, personRegex, rules);
     const fallbackSentence =
       splitSentences(entry.entryText).find((s) => personRegex.test(s)) || entry.entryText;
 
-    if (pinned) {
-      const cat = pinned.category || proximity?.rule.category || 'Pinned Milestone';
-      const style = pinned.category
-        ? resolveCategoryStyle(pinned.category)
-        : {
-            filterGroup: proximity?.rule.filterGroup ?? ('milestones' as MilestoneFilterGroup),
-            color: proximity?.rule.color ?? '#C85A43',
-          };
-      pinnedMatches.push({
-        entry,
-        category: cat,
-        filterGroup: style.filterGroup,
-        color: style.color,
-        label: pinned.label,
-        customPhotoKey: pinned.customPhotoKey,
-        summary: pinned.label?.trim() || proximity?.matchedSentence || cleanSentence(fallbackSentence),
-        isPinned: true,
-        isStarred: entry.starred,
-        isFirstMention,
-        score: 100,
-        snippet,
-      });
-      seenUuids.add(upperUuid);
+    if (pinnedList && pinnedList.length > 0) {
+      for (let i = 0; i < pinnedList.length; i++) {
+        const pinned = pinnedList[i];
+        const cat = pinned.category || proximity?.rule.category || 'Pinned Milestone';
+        const style = pinned.category
+          ? resolveCategoryStyle(pinned.category)
+          : {
+              filterGroup: proximity?.rule.filterGroup ?? ('milestones' as MilestoneFilterGroup),
+              color: proximity?.rule.color ?? '#C85A43',
+            };
+        pinnedMatches.push({
+          milestoneId: pinned.id || `${upperUuid}${i > 0 ? `_${i}` : ''}`,
+          entry,
+          displayDate: toDisplayDate(pinned.customDate, entry.creationDate),
+          category: cat,
+          filterGroup: style.filterGroup,
+          color: style.color,
+          label: pinned.label,
+          customPhotoKey: pinned.customPhotoKey,
+          summary:
+            pinned.label?.trim() || proximity?.matchedSentence || cleanSentence(fallbackSentence),
+          isPinned: true,
+          isStarred: entry.starred,
+          isFirstMention,
+          score: 100,
+          snippet,
+        });
+      }
+      handledEntryUuids.add(upperUuid);
       continue;
     }
 
     if (isHidden) continue;
 
     // When AI curation has been run for this person, show only the clean curated milestones
-    if (person.aiCurated && pinnedMap.size > 0) continue;
+    if (person.aiCurated && pinnedByEntry.size > 0) continue;
 
     if (proximity) {
       autoCandidates.push({
+        milestoneId: upperUuid,
         entry,
+        displayDate: entry.creationDate,
         category: proximity.rule.category,
         filterGroup: proximity.rule.filterGroup,
         color: proximity.rule.color,
@@ -396,10 +418,12 @@ export function buildPersonHighlightReel(
         score: proximity.rule.weight + (entry.starred ? 2 : 0) + (isFirstMention ? 2 : 0),
         snippet,
       });
-      seenUuids.add(upperUuid);
+      handledEntryUuids.add(upperUuid);
     } else if (isFirstMention) {
       autoCandidates.push({
+        milestoneId: upperUuid,
         entry,
+        displayDate: entry.creationDate,
         category: 'First Mention',
         filterGroup: 'milestones',
         color: '#1B4965',
@@ -410,10 +434,12 @@ export function buildPersonHighlightReel(
         score: 9,
         snippet,
       });
-      seenUuids.add(upperUuid);
+      handledEntryUuids.add(upperUuid);
     } else if (entry.starred) {
       autoCandidates.push({
+        milestoneId: upperUuid,
         entry,
+        displayDate: entry.creationDate,
         category: 'Favorite Memory',
         filterGroup: 'milestones',
         color: '#D97706',
@@ -424,33 +450,38 @@ export function buildPersonHighlightReel(
         score: 8,
         snippet,
       });
-      seenUuids.add(upperUuid);
+      handledEntryUuids.add(upperUuid);
     }
   }
 
   // Also include manually pinned entries even if they don't mention the name or precede startDate
-  if (pinnedMap.size > 0) {
+  if (pinnedByEntry.size > 0) {
     const entryByUpper = new Map(entries.map((e) => [e.uuid.toUpperCase(), e]));
-    for (const [upperUuid, pinned] of pinnedMap.entries()) {
-      if (seenUuids.has(upperUuid)) continue;
+    for (const [upperUuid, pinnedList] of pinnedByEntry.entries()) {
+      if (handledEntryUuids.has(upperUuid)) continue;
       const entry = entryByUpper.get(upperUuid);
       if (!entry) continue;
-      const cat = pinned.category || 'Pinned Milestone';
-      const style = resolveCategoryStyle(cat);
-      pinnedMatches.push({
-        entry,
-        category: cat,
-        filterGroup: style.filterGroup,
-        color: style.color,
-        label: pinned.label,
-        customPhotoKey: pinned.customPhotoKey,
-        summary: pinned.label?.trim() || cleanSentence(entry.entryText),
-        isPinned: true,
-        isStarred: entry.starred,
-        isFirstMention: false,
-        score: 100,
-        snippet: entry.entryText.replace(/\s+/g, ' ').trim().slice(0, 160),
-      });
+      for (let i = 0; i < pinnedList.length; i++) {
+        const pinned = pinnedList[i];
+        const cat = pinned.category || 'Pinned Milestone';
+        const style = resolveCategoryStyle(cat);
+        pinnedMatches.push({
+          milestoneId: pinned.id || `${upperUuid}${i > 0 ? `_${i}` : ''}`,
+          entry,
+          displayDate: toDisplayDate(pinned.customDate, entry.creationDate),
+          category: cat,
+          filterGroup: style.filterGroup,
+          color: style.color,
+          label: pinned.label,
+          customPhotoKey: pinned.customPhotoKey,
+          summary: pinned.label?.trim() || cleanSentence(entry.entryText),
+          isPinned: true,
+          isStarred: entry.starred,
+          isFirstMention: false,
+          score: 100,
+          snippet: entry.entryText.replace(/\s+/g, ' ').trim().slice(0, 160),
+        });
+      }
     }
   }
 

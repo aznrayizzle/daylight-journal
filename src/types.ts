@@ -47,9 +47,13 @@ export type FolderLayout = 'standard' | 'flat';
 export type ThemePreference = 'system' | 'light' | 'dark';
 
 export interface PinnedMilestone {
+  /** Unique milestone ID (defaults to entryUuid). Allows multiple milestones to link to the same weekly .doentry. */
+  id?: string;
   entryUuid: string;
   label?: string;
   category?: string;
+  /** Optional exact YYYY-MM-DD date override for display & sorting (e.g. exact day inside a weekly entry). */
+  customDate?: string;
   /** Optional custom photo key stored in IndexedDB `photos` store (overrides entry photo on Polaroid only). */
   customPhotoKey?: string;
 }

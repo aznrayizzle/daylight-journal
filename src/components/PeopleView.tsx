@@ -128,8 +128,8 @@ export const PeopleView = memo(function PeopleView({
     const copy = [...base];
     copy.sort((a, b) =>
       oldestFirst
-        ? a.entry.creationDate.localeCompare(b.entry.creationDate)
-        : b.entry.creationDate.localeCompare(a.entry.creationDate)
+        ? a.displayDate.localeCompare(b.displayDate)
+        : b.displayDate.localeCompare(a.displayDate)
     );
     return copy;
   }, [milestones, filterGroup, oldestFirst]);
@@ -138,7 +138,7 @@ export const PeopleView = memo(function PeopleView({
   const yearGroups = useMemo(() => {
     const map = new Map<number, MilestoneMatch[]>();
     for (const m of filteredMilestones) {
-      const { year } = getEntryDateParts(m.entry);
+      const year = new Date(m.displayDate).getFullYear();
       const list = map.get(year) ?? [];
       list.push(m);
       map.set(year, list);
@@ -160,15 +160,21 @@ export const PeopleView = memo(function PeopleView({
       setActiveEntryUuid(mentions[0]?.entry.uuid ?? null);
       return;
     }
-    if (!filteredMilestones.some((m) => m.entry.uuid === activeEntryUuid)) {
-      setActiveEntryUuid(filteredMilestones[0].entry.uuid);
+    if (
+      !filteredMilestones.some(
+        (m) => m.milestoneId === activeEntryUuid || m.entry.uuid === activeEntryUuid
+      )
+    ) {
+      setActiveEntryUuid(filteredMilestones[0].milestoneId);
     }
   }, [activePerson?.id, filteredMilestones, mentions, activeEntryUuid]);
 
   const activeMilestone = useMemo(() => {
     if (!activeEntryUuid) return filteredMilestones[0] ?? null;
     return (
-      filteredMilestones.find((m) => m.entry.uuid === activeEntryUuid) ??
+      filteredMilestones.find(
+        (m) => m.milestoneId === activeEntryUuid || m.entry.uuid === activeEntryUuid
+      ) ??
       filteredMilestones[0] ??
       null
     );
@@ -179,7 +185,11 @@ export const PeopleView = memo(function PeopleView({
     return mentions.find((m) => m.entry.uuid === activeEntryUuid)?.entry ?? mentions[0]?.entry ?? null;
   }, [activeMilestone, mentions, activeEntryUuid]);
 
-  const activeYear = activeMentionEntry ? getEntryDateParts(activeMentionEntry).year : null;
+  const activeYear = activeMilestone
+    ? new Date(activeMilestone.displayDate).getFullYear()
+    : activeMentionEntry
+      ? getEntryDateParts(activeMentionEntry).year
+      : null;
 
   const pinnedSet = useMemo(
     () => new Set((activePerson?.pinnedMilestones ?? []).map((p) => p.entryUuid.toUpperCase())),
@@ -214,13 +224,13 @@ export const PeopleView = memo(function PeopleView({
   const stepMilestone = (delta: number) => {
     if (filteredMilestones.length < 2 || !activeMilestone) return;
     const idx = filteredMilestones.findIndex(
-      (m) => m.entry.uuid === activeMilestone.entry.uuid
+      (m) => m.milestoneId === activeMilestone.milestoneId
     );
     const next =
       filteredMilestones[(idx + delta + filteredMilestones.length) % filteredMilestones.length];
     if (next) {
-      setActiveEntryUuid(next.entry.uuid);
-      jumpToYear(getEntryDateParts(next.entry).year);
+      setActiveEntryUuid(next.milestoneId);
+      jumpToYear(new Date(next.displayDate).getFullYear());
     }
   };
 
@@ -336,11 +346,11 @@ export const PeopleView = memo(function PeopleView({
   }, [isDriveMode, isDriveSignedIn, filteredMilestones, photosByUuid]);
 
   const renderPolaroidCard = (m: MilestoneMatch, position: 'top' | 'bottom', tiltIdx: number) => {
-    const isSel = activeMilestone?.entry.uuid === m.entry.uuid;
+    const isSel = activeMilestone?.milestoneId === m.milestoneId;
     const photo = resolveMilestonePhoto(m);
     const tilt = TILTS[tiltIdx % TILTS.length];
-    const shortDate = formatShortDate(m.entry.creationDate);
-    const { year } = getEntryDateParts(m.entry);
+    const shortDate = formatShortDate(m.displayDate);
+    const year = new Date(m.displayDate).getFullYear();
 
     const summaryBlock = (
       <div className="max-w-[186px] text-center">
@@ -435,10 +445,10 @@ export const PeopleView = memo(function PeopleView({
       );
 
     return (
-      <div key={m.entry.uuid} className="w-[196px] shrink-0 flex flex-col items-center">
+      <div key={m.milestoneId} className="w-[196px] shrink-0 flex flex-col items-center">
         {position === 'bottom' && stem}
         <button
-          onClick={() => setActiveEntryUuid(m.entry.uuid)}
+          onClick={() => setActiveEntryUuid(m.milestoneId)}
           className="group flex flex-col items-center cursor-pointer focus:outline-none"
         >
           {position === 'bottom' && <div className="mb-2">{summaryBlock}</div>}
@@ -456,7 +466,7 @@ export const PeopleView = memo(function PeopleView({
       ? photosByUuid.get(activeMentionEntry.uuid.toUpperCase())
       : undefined;
   const activeIdx = activeMilestone
-    ? filteredMilestones.findIndex((m) => m.entry.uuid === activeMilestone.entry.uuid)
+    ? filteredMilestones.findIndex((m) => m.milestoneId === activeMilestone.milestoneId)
     : -1;
 
   return (
@@ -813,7 +823,7 @@ export const PeopleView = memo(function PeopleView({
                           {activeMilestone.category}
                         </span>
                         <span className="font-semibold text-slate-800 dark:text-slate-100">
-                          {formatFullDate(activeMentionEntry.creationDate)}
+                          {formatFullDate(activeMilestone.displayDate)}
                         </span>
                         {activeMentionEntry.location?.placeName && (
                           <span className="inline-flex items-center gap-1 text-slate-500 dark:text-slate-400">
