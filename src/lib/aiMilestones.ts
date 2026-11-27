@@ -8,7 +8,7 @@ interface AiMilestoneItem {
   category: string;
 }
 
-const GEMINI_MODEL = 'gemini-2.5-flash';
+const GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-4-hydrogen', 'gemini-2.5-flash'];
 
 /**
  * Uses the user's own Gemini API key (client-side, directly to Google AI) to read entries
@@ -63,23 +63,35 @@ Return strictly a JSON array of objects with keys: "uuid", "summary", "category"
 Entries:
 ${digestLines.join('\n')}`;
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(key)}`;
+  let res: Response | null = null;
+  let lastErr = '';
+  for (const model of GEMINI_MODELS) {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+    const attempt = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0.2,
+        },
+      }),
+    });
+    if (attempt.ok) {
+      res = attempt;
+      break;
+    }
+    const errBody = await attempt.text().catch(() => '');
+    lastErr = `Gemini API error (${attempt.status} on ${model}): ${errBody.slice(0, 200) || attempt.statusText}`;
+    // Only fall back to the next model on 404 / deprecated model errors
+    if (attempt.status !== 404 && attempt.status !== 400) {
+      throw new Error(lastErr);
+    }
+  }
 
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType: 'application/json',
-        temperature: 0.2,
-      },
-    }),
-  });
-
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => '');
-    throw new Error(`Gemini API error (${res.status}): ${errBody.slice(0, 200) || res.statusText}`);
+  if (!res) {
+    throw new Error(lastErr || 'Gemini API request failed.');
   }
 
   const data = (await res.json()) as {
