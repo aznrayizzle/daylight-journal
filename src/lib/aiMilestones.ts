@@ -8,7 +8,7 @@ interface AiMilestoneItem {
   category: string;
 }
 
-const GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-4-hydrogen', 'gemini-2.5-flash'];
+const GEMINI_MODELS = ['gemini-4-hydrogen', 'gemini-3.8-flash', 'gemini-2.5-flash'];
 
 /**
  * Uses the user's own Gemini API key (client-side, directly to Google AI) to read entries
